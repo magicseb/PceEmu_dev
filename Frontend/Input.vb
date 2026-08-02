@@ -1,117 +1,149 @@
-''' <summary>Gestion clavier pour l'émulateur</summary>
+''' <summary>
+''' Suit l'état du clavier et traduit les touches en actions de la console.
+'''
+''' Les assignations viennent de la configuration ; à défaut, les touches par défaut
+''' sont déduites de la disposition active, si bien qu'un clavier AZERTY reçoit
+''' naturellement W là où un QWERTY reçoit Z — la même position physique.
+''' </summary>
 Public Class InputManager
 
-    Private keyState As System.Collections.Generic.Dictionary(Of String, Boolean)
-    Private lastKeyState As System.Collections.Generic.Dictionary(Of String, Boolean)
-    
-    Public Sub New()
-        keyState = New System.Collections.Generic.Dictionary(Of String, Boolean)
-        lastKeyState = New System.Collections.Generic.Dictionary(Of String, Boolean)
-        
-        InitializeKeyMap()
+    ' Noms des actions, utilisés dans la configuration et dans la fenêtre de réglage
+    Public Const ACTION_UP As String = "Haut"
+    Public Const ACTION_DOWN As String = "Bas"
+    Public Const ACTION_LEFT As String = "Gauche"
+    Public Const ACTION_RIGHT As String = "Droite"
+    Public Const ACTION_BUTTON_I As String = "BoutonI"
+    Public Const ACTION_BUTTON_II As String = "BoutonII"
+    Public Const ACTION_SELECT As String = "Select"
+    Public Const ACTION_RUN As String = "Run"
+    Public Const ACTION_PAUSE As String = "Pause"
+    Public Const ACTION_RESET As String = "Reset"
+    Public Const ACTION_SAVE_STATE As String = "Sauvegarder"
+    Public Const ACTION_LOAD_STATE As String = "Charger"
+
+    ''' <summary>Toutes les actions assignables, dans l'ordre d'affichage.</summary>
+    Public Shared ReadOnly AllActions As String() = {
+        ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT,
+        ACTION_BUTTON_I, ACTION_BUTTON_II, ACTION_SELECT, ACTION_RUN,
+        ACTION_PAUSE, ACTION_RESET, ACTION_SAVE_STATE, ACTION_LOAD_STATE
+    }
+
+    ''' <summary>Actions transmises à la manette de la console.</summary>
+    Private Shared ReadOnly PadActions As String() = {
+        ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT,
+        ACTION_BUTTON_I, ACTION_BUTTON_II, ACTION_SELECT, ACTION_RUN
+    }
+
+    Private ReadOnly keyState As New System.Collections.Generic.Dictionary(Of String, Boolean)
+    Private ReadOnly lastState As New System.Collections.Generic.Dictionary(Of String, Boolean)
+    Private ReadOnly padState As New System.Collections.Generic.Dictionary(Of String, Boolean)
+
+    ''' <summary>Touche assignée à chaque action.</summary>
+    Private ReadOnly bindings As New System.Collections.Generic.Dictionary(Of String, System.Windows.Forms.Keys)
+
+    Public Sub New(config As Settings)
+        For Each action In AllActions
+            keyState(action) = False
+            lastState(action) = False
+            padState(action) = False
+        Next
+        ApplyBindings(config)
     End Sub
 
-    ''' <summary>Initialise le mappage des touches</summary>
-    Private Sub InitializeKeyMap()
-        keyState.Add("Up", False)
-        keyState.Add("Down", False)
-        keyState.Add("Left", False)
-        keyState.Add("Right", False)
-        keyState.Add("Z", False)       ' Bouton II
-        keyState.Add("X", False)       ' Bouton I
-        keyState.Add("Enter", False)   ' Run
-        keyState.Add("LShift", False)  ' Select
-        keyState.Add("P", False)       ' Pause
-        keyState.Add("R", False)       ' Reset
-        keyState.Add("F5", False)      ' Sauvegarder l'état
-        keyState.Add("F8", False)      ' Charger l'état
-        
-        For Each key In keyState.Keys.ToList()
-            lastKeyState.Add(key, False)
+    ''' <summary>Relit les assignations depuis la configuration.</summary>
+    Public Sub ApplyBindings(config As Settings)
+        bindings.Clear()
+
+        For Each action In AllActions
+            Dim configured As System.Windows.Forms.Keys? = Nothing
+            If config IsNot Nothing Then configured = config.GetBinding(action)
+            bindings(action) = If(configured.HasValue, configured.Value, DefaultKey(action))
         Next
     End Sub
 
-    ''' <summary>Met à jour l'état d'une touche (KeyDown)</summary>
-    Public Sub HandleKeyDown(e As System.Windows.Forms.KeyEventArgs)
-        Select Case e.KeyCode
-            Case System.Windows.Forms.Keys.Up
-                keyState("Up") = True
-            Case System.Windows.Forms.Keys.Down
-                keyState("Down") = True
-            Case System.Windows.Forms.Keys.Left
-                keyState("Left") = True
-            Case System.Windows.Forms.Keys.Right
-                keyState("Right") = True
-            Case System.Windows.Forms.Keys.Z
-                keyState("Z") = True
-            Case System.Windows.Forms.Keys.X
-                keyState("X") = True
-            Case System.Windows.Forms.Keys.Return
-                keyState("Enter") = True
-            Case System.Windows.Forms.Keys.LShiftKey, System.Windows.Forms.Keys.ShiftKey
-                keyState("LShift") = True
-            Case System.Windows.Forms.Keys.P
-                keyState("P") = True
-            Case System.Windows.Forms.Keys.R
-                keyState("R") = True
-            Case System.Windows.Forms.Keys.F5
-                keyState("F5") = True
-            Case System.Windows.Forms.Keys.F8
-                keyState("F8") = True
+    ''' <summary>
+    ''' Touche par défaut d'une action. Les deux boutons de jeu sont désignés par leur
+    ''' emplacement physique, les autres par une touche identique sur toutes les
+    ''' dispositions.
+    ''' </summary>
+    Public Shared Function DefaultKey(action As String) As System.Windows.Forms.Keys
+        Select Case action
+            Case ACTION_UP : Return System.Windows.Forms.Keys.Up
+            Case ACTION_DOWN : Return System.Windows.Forms.Keys.Down
+            Case ACTION_LEFT : Return System.Windows.Forms.Keys.Left
+            Case ACTION_RIGHT : Return System.Windows.Forms.Keys.Right
+            Case ACTION_BUTTON_I : Return KeyboardLayout.KeyAt(KeyboardLayout.SCAN_X, System.Windows.Forms.Keys.X)
+            Case ACTION_BUTTON_II : Return KeyboardLayout.KeyAt(KeyboardLayout.SCAN_Z, System.Windows.Forms.Keys.Z)
+            Case ACTION_SELECT : Return System.Windows.Forms.Keys.ShiftKey
+            Case ACTION_RUN : Return System.Windows.Forms.Keys.Return
+            Case ACTION_PAUSE : Return System.Windows.Forms.Keys.P
+            Case ACTION_RESET : Return System.Windows.Forms.Keys.R
+            Case ACTION_SAVE_STATE : Return System.Windows.Forms.Keys.F5
+            Case ACTION_LOAD_STATE : Return System.Windows.Forms.Keys.F8
+            Case Else : Return System.Windows.Forms.Keys.None
         End Select
-    End Sub
-
-    ''' <summary>Met à jour l'état d'une touche (KeyUp)</summary>
-    Public Sub HandleKeyUp(e As System.Windows.Forms.KeyEventArgs)
-        Select Case e.KeyCode
-            Case System.Windows.Forms.Keys.Up
-                keyState("Up") = False
-            Case System.Windows.Forms.Keys.Down
-                keyState("Down") = False
-            Case System.Windows.Forms.Keys.Left
-                keyState("Left") = False
-            Case System.Windows.Forms.Keys.Right
-                keyState("Right") = False
-            Case System.Windows.Forms.Keys.Z
-                keyState("Z") = False
-            Case System.Windows.Forms.Keys.X
-                keyState("X") = False
-            Case System.Windows.Forms.Keys.Return
-                keyState("Enter") = False
-            Case System.Windows.Forms.Keys.LShiftKey, System.Windows.Forms.Keys.ShiftKey
-                keyState("LShift") = False
-            Case System.Windows.Forms.Keys.P
-                keyState("P") = False
-            Case System.Windows.Forms.Keys.R
-                keyState("R") = False
-            Case System.Windows.Forms.Keys.F5
-                keyState("F5") = False
-            Case System.Windows.Forms.Keys.F8
-                keyState("F8") = False
-        End Select
-    End Sub
-
-    ''' <summary>Retourne l'état actuel des touches</summary>
-    Public Function GetKeyState() As System.Collections.Generic.Dictionary(Of String, Boolean)
-        Return New System.Collections.Generic.Dictionary(Of String, Boolean)(keyState)
     End Function
 
-    ''' <summary>Détecte une pression de touche (transition 0→1)</summary>
-    Public Function IsKeyPressed(keyName As String) As Boolean
-        If Not keyState.ContainsKey(keyName) Then Return False
-        If Not lastKeyState.ContainsKey(keyName) Then Return False
-        
-        Dim result = keyState(keyName) And Not lastKeyState(keyName)
-        lastKeyState(keyName) = keyState(keyName)
+    ''' <summary>Touche actuellement assignée à une action.</summary>
+    Public Function BindingOf(action As String) As System.Windows.Forms.Keys
+        Dim key As System.Windows.Forms.Keys
+        If bindings.TryGetValue(action, key) Then Return key
+        Return System.Windows.Forms.Keys.None
+    End Function
+
+    Public Sub HandleKeyDown(e As System.Windows.Forms.KeyEventArgs)
+        SetKey(e.KeyCode, True)
+    End Sub
+
+    Public Sub HandleKeyUp(e As System.Windows.Forms.KeyEventArgs)
+        SetKey(e.KeyCode, False)
+    End Sub
+
+    Private Sub SetKey(code As System.Windows.Forms.Keys, pressed As Boolean)
+        ' Les deux touches Majuscule remontent parfois sous leur forme générique
+        Dim normalized = code
+        If code = System.Windows.Forms.Keys.LShiftKey OrElse code = System.Windows.Forms.Keys.RShiftKey Then
+            normalized = System.Windows.Forms.Keys.ShiftKey
+        End If
+
+        For Each action In AllActions
+            If bindings(action) = normalized OrElse bindings(action) = code Then
+                keyState(action) = pressed
+            End If
+        Next
+    End Sub
+
+    ''' <summary>Applique l'état d'une manette, fusionné avec celui du clavier.</summary>
+    Public Sub ApplyGamepad(state As System.Collections.Generic.Dictionary(Of String, Boolean))
+        For Each action In AllActions
+            padState(action) = state IsNot Nothing AndAlso
+                               state.ContainsKey(action) AndAlso state(action)
+        Next
+    End Sub
+
+    ''' <summary>État des boutons de la console, clavier et manette confondus.</summary>
+    Public Function GetPadState() As System.Collections.Generic.Dictionary(Of String, Boolean)
+        Dim result As New System.Collections.Generic.Dictionary(Of String, Boolean)
+        For Each action In PadActions
+            result(action) = keyState(action) OrElse padState(action)
+        Next
         Return result
     End Function
 
-    ''' <summary>Détecte si une touche est maintenue</summary>
-    Public Function IsKeyHeld(keyName As String) As Boolean
-        If keyState.ContainsKey(keyName) Then
-            Return keyState(keyName)
-        End If
-        Return False
+    ''' <summary>Détecte l'instant où une action vient d'être déclenchée.</summary>
+    Public Function IsActionPressed(action As String) As Boolean
+        If Not keyState.ContainsKey(action) Then Return False
+
+        Dim current = keyState(action) OrElse padState(action)
+        Dim pressed = current AndAlso Not lastState(action)
+        lastState(action) = current
+        Return pressed
+    End Function
+
+    ''' <summary>Vrai si l'action est maintenue.</summary>
+    Public Function IsActionHeld(action As String) As Boolean
+        If Not keyState.ContainsKey(action) Then Return False
+        Return keyState(action) OrElse padState(action)
     End Function
 
 End Class

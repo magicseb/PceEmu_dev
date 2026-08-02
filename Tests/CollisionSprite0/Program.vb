@@ -103,8 +103,9 @@ Public Module CollisionSprite0Test
     End Function
 
     Private Sub RunFrame(vdc As Vdc, framebuffer() As Integer)
+        ' Le framebuffer n'est plus utilisé : le VDC écrit dans sa propre ligne de sortie
         For line = 0 To PceConstants.SCANLINES_PER_FRAME - 1
-            vdc.DoScanline(line, framebuffer)
+            vdc.DoScanline(line)
         Next
     End Sub
 

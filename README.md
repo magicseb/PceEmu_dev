@@ -18,7 +18,6 @@
 
 ## Limitations actuelles
 
-- ❌ SuperGrafx (VDC2/VPC) : retiré temporairement, à réintégrer
 - ❌ CD-ROM² / Arcade Card
 - ❌ Sortie audio mono (pas de stéréo balancée)
 - ❌ Timing VDC par scanline (pas mid-scanline)
@@ -75,7 +74,7 @@ Affiche le comptage de frames et de pixels non-noirs sur 10 frames.
 |--------|------------------|
 | Flèches | Directions |
 | X | Bouton I |
-| Z | Bouton II |
+| W | Bouton II |
 | Entrée | RUN |
 | Shift | SELECT |
 | P | Pause |
@@ -100,12 +99,20 @@ PceEmu/
 │   ├── MainForm.vb           # Fenêtre, menus, boucle d'émulation (limiteur précis)
 │   ├── Direct3D11Renderer.vb # Rendu GDI+ (nom historique) : bitmap + Paint + Invalidate
 │   ├── AudioOut.vb           # NAudio mono, buffer 500 ms, pré-roll
-│   └── Input.vb              # État clavier
+│   ├── Input.vb              # Actions clavier configurables
+│   ├── KeyboardLayout.vb     # Position physique d'une touche selon la disposition
+│   ├── GamepadInput.vb       # Manette Xbox (XInput, sans dépendance)
+│   ├── KeyConfigForm.vb      # Fenêtre de configuration des touches
+│   ├── RomLibraryForm.vb     # Bibliothèque du dossier des jeux
+│   ├── RomArchive.vb         # Ouverture ROM / ZIP / 7z en mémoire
+│   └── Settings.vb           # Réglages persistants (PceEmu.cfg)
 ├── Tests/                    # Bancs d'essai (projets séparés, hors PceEmu.sln)
 │   ├── CollisionSprite0/     # Vérifie la collision du sprite 0 via les registres VDC
 │   ├── LfoPsg/               # Vérifie le LFO du PSG contre des références calculées
 │   ├── MapperSf2/            # Vérifie le mapper SF2 avec une ROM factice à motif connu
-│   └── SaveState/            # Vérifie le déterminisme des sauvegardes et la BRAM
+│   ├── SaveState/            # Vérifie le déterminisme des sauvegardes et la BRAM
+│   ├── SuperGrafx/           # Vérifie le décodage, la RAM étendue et le mélange VPC
+│   └── RomArchive/           # Vérifie l'ouverture des ROMs nues, ZIP et 7z
 ├── Program.vb                # Point d'entrée (+ mode --test-console)
 ├── PceEmu.vbproj             # Projet (.NET 8, RemoveIntegerChecks, NAudio)
 └── PceEmu.sln
@@ -126,7 +133,7 @@ C'est la seule dépendance : SharpDX a été abandonné au profit de GDI+.
 3. ✅ **Sprites + IRQ RCR/VBlank + DMA SATB** — scènes de jeu correctes
 4. ✅ **Joypad** — navigation des menus validée
 5. ✅ **PSG** — musique juste (fréquences vérifiées par analyse spectrale), voix DDA restituées
-6. ❌ **SuperGrafx** — à réintégrer
+6. ✅ **SuperGrafx** — les cinq jeux démarrent et animent ; Daimakaimura pilote les fenêtres du VPC (9 526 écritures en 1800 frames)
 7. ✅ **Mapper SF2** — Street Fighter II' démarre et anime, 1662 commutations de banque en 3600 frames
 
 ## Notes techniques
@@ -140,6 +147,7 @@ C'est la seule dépendance : SharpDX a été abandonné au profit de GDI+.
 - Collision du sprite 0 évaluée sur les pixels opaques, quel que soit l'ordre d'affichage
 - Volumes PSG logarithmiques (1,5 dB par pas) — indispensable pour l'équilibre musical
 - DDA : chaque écriture est horodatée au cycle CPU et rejouée sur la timeline de la frame (sans cela, voix et coups sont inaudibles)
+- SuperGrafx : chaque VDC tranche lui-même entre son fond et ses sprites, et n'émet qu'un pixel accompagné d'un drapeau « sprite ou fond » ; le VPC ne peut donc pas distinguer un sprite de priorité haute d'un sprite de priorité basse
 - BRAM : une console neuve présente l'en-tête de formatage « HUBM » ; sans lui les jeux considèrent la mémoire vierge et refusent d'y écrire
 - Sauvegarde d'état : l'empreinte de la ROM est stockée dans le fichier, ce qui interdit de charger l'état d'un autre jeu ; le verrou d'écriture de la BRAM ($1803) n'est pas émulé
 - Mapper SF2 : c'est l'adresse écrite qui sélectionne la banque ($1FF0 à $1FF3), la valeur écrite est ignorée ; le mapping est porté par la cartouche, pas par la MMU
@@ -168,12 +176,18 @@ R : Voir `Tests/README.md`. Le banc d'essai de la collision sprite 0 se lance av
 **Q : Une ROM ne boote pas**
 R : Les ROMs avec en-tête (taille Mod 8192 = 512) sont gérées. Signaler la ROM concernée pour diagnostic.
 
+## Dossier des jeux et configuration
+
+Les jeux sont cherchés dans un dossier `games` créé à côté de l'exécutable, sous-dossiers compris. **Fichier → Bibliothèque de jeux** en donne la liste avec un filtre par nom ; le dossier se change depuis cette fenêtre ou depuis **Options → Dossier des jeux**.
+
+Les réglages (touches, dossier des jeux, manette) sont conservés dans `PceEmu.cfg`, à côté de l'exécutable. C'est un fichier texte en « clé = valeur », modifiable à la main si besoin.
+
 ## Licence
 
 Projet d'apprentissage. Libre de modification pour usage personnel.
 
 ---
 
-**Version** : 1.2 (août 2026) — Core validé sur ROMs commerciales  
+**Version** : 1.3 (août 2026) — Core validé sur ROMs commerciales  
 **Langage** : VB.NET (.NET 8)  
 **Plateforme** : Windows (WinForms + GDI+)

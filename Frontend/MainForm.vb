@@ -9,7 +9,9 @@ Public Class MainForm
     Private pceSystem As PceSystem
     Private renderer As Direct3D11Renderer
     Private audioOut As AudioOut
+    Private ReadOnly config As Settings = Settings.Load()
     Private inputManager As InputManager
+    Private ReadOnly gamepad As New GamepadInput()
     
     Private emulationTask As System.Threading.Tasks.Task
     Private shouldStopEmulation As Boolean = False
@@ -22,6 +24,9 @@ Public Class MainForm
 
     Private currentRomPath As String = Nothing
     Private currentSlot As Integer = 1
+    Private superGrafxMode As Boolean = False
+    Private superGrafxMenuItem As System.Windows.Forms.ToolStripMenuItem
+    Private gamepadMenuItem As System.Windows.Forms.ToolStripMenuItem
     
     Public Sub New()
         MyBase.New()
@@ -40,7 +45,9 @@ Public Class MainForm
         
         ' File menu
         Dim fileMenu = New System.Windows.Forms.ToolStripMenuItem("&File")
-        fileMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Open ROM", Nothing, AddressOf MenuOpenROM))
+        fileMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Bibliothèque de jeux…", Nothing, AddressOf MenuLibrary))
+        fileMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Ouvrir une ROM…", Nothing, AddressOf MenuOpenROM))
+        fileMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Télécharger des jeux…", Nothing, AddressOf MenuDownload))
         fileMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripSeparator())
         fileMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("E&xit", Nothing, AddressOf MenuExit))
         
@@ -61,7 +68,9 @@ Public Class MainForm
         Next
         emuMenu.DropDownItems.Add(slotMenu)
         emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripSeparator())
-        emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("Enable &SuperGrafx", Nothing, AddressOf MenuToggleSuperGrafx))
+        superGrafxMenuItem = New System.Windows.Forms.ToolStripMenuItem("Mode Super&Grafx", Nothing, AddressOf MenuToggleSuperGrafx)
+        superGrafxMenuItem.CheckOnClick = True
+        emuMenu.DropDownItems.Add(superGrafxMenuItem)
         
         ' View menu
         Dim viewMenu = New System.Windows.Forms.ToolStripMenuItem("&View")
@@ -69,7 +78,19 @@ Public Class MainForm
         viewMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("Scale &2x", Nothing, AddressOf MenuScale2x))
         viewMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("Scale &3x", Nothing, AddressOf MenuScale3x))
         
-        menuStripMain.Items.AddRange({fileMenu, emuMenu, viewMenu})
+        ' Menu Options
+        Dim optionsMenu = New System.Windows.Forms.ToolStripMenuItem("&Options")
+        optionsMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem(
+            "Configurer les &touches…", Nothing, AddressOf MenuConfigureKeys))
+        optionsMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem(
+            "&Dossier des jeux…", Nothing, AddressOf MenuChooseGamesFolder))
+        gamepadMenuItem = New System.Windows.Forms.ToolStripMenuItem(
+            "Manette &Xbox", Nothing, AddressOf MenuToggleGamepad)
+        gamepadMenuItem.CheckOnClick = True
+        gamepadMenuItem.Checked = config.GamepadEnabled
+        optionsMenu.DropDownItems.Add(gamepadMenuItem)
+
+        menuStripMain.Items.AddRange({fileMenu, emuMenu, viewMenu, optionsMenu})
         Me.Controls.Add(menuStripMain)
         
         ' Render panel
@@ -89,8 +110,8 @@ Public Class MainForm
         statusLabel.Padding = New System.Windows.Forms.Padding(5)
         Me.Controls.Add(statusLabel)
         
-        ' Input manager
-        inputManager = New InputManager()
+        ' Entrées : les touches par défaut suivent la disposition clavier détectée
+        inputManager = New InputManager(config)
         
         ' Événements clavier
         Me.KeyPreview = True
@@ -99,7 +120,10 @@ Public Class MainForm
     ''' <summary>Ouvre une ROM</summary>
     Private Sub MenuOpenROM(sender As Object, e As EventArgs)
         Dim openFileDialog = New System.Windows.Forms.OpenFileDialog()
-        openFileDialog.Filter = "PC Engine ROMs (*.pce)|*.pce|Tous les fichiers (*.*)|*.*"
+        openFileDialog.Filter = "Jeux PC Engine (*.pce;*.sgx;*.zip;*.7z)|*.pce;*.sgx;*.zip;*.7z|" &
+                                "ROMs (*.pce;*.sgx)|*.pce;*.sgx|" &
+                                "Archives (*.zip;*.7z)|*.zip;*.7z|" &
+                                "Tous les fichiers (*.*)|*.*"
         openFileDialog.Title = "Ouvrir une ROM PC Engine"
         
         If openFileDialog.ShowDialog() = System.Windows.Forms.DialogResult.OK Then
@@ -108,7 +132,7 @@ Public Class MainForm
     End Sub
 
     ''' <summary>Charge et démarre une ROM</summary>
-    Private Sub LoadROM(romPath As String)
+    Private Sub LoadROM(romPath As String, Optional forceMode As Boolean = False)
         Try
             ' Arrêter l'émulation courante
             StopEmulationTask()
@@ -117,7 +141,16 @@ Public Class MainForm
             ' La BRAM du jeu précédent est enregistrée avant tout changement
             FlushBram()
 
-            pceSystem = New PceSystem(romPath, False)
+            ' Sans consigne explicite, on se fie au nom du fichier
+            If Not forceMode Then
+                superGrafxMode = LooksLikeSuperGrafx(romPath)
+                superGrafxMenuItem.Checked = superGrafxMode
+            End If
+
+
+            ' L'archive éventuelle est décompressée en mémoire, rien n'atterrit sur le disque
+            Dim rom = RomArchive.Load(romPath)
+            pceSystem = New PceSystem(rom.Title, rom.Data, superGrafxMode)
             currentRomPath = romPath
             pceSystem.LoadBram(BramPath())
             
@@ -136,7 +169,7 @@ Public Class MainForm
             ' Démarrer la boucle d'émulation
             emulationTask = System.Threading.Tasks.Task.Run(AddressOf EmulationLoop)
             
-            statusLabel.Text = "ROM chargée. Lancement..."
+            statusLabel.Text = "ROM chargée en mode " & ModeName() & "."
             Me.Text = "PceEmu - " & System.IO.Path.GetFileName(romPath)
         Catch ex As Exception
             System.Windows.Forms.MessageBox.Show("Erreur chargement ROM : " & ex.Message)
@@ -155,7 +188,7 @@ Public Class MainForm
         While Not shouldStopEmulation
             If Not isPaused And pceSystem IsNot Nothing Then
                 ' Entrées
-                pceSystem.UpdateInput(inputManager.GetKeyState())
+                pceSystem.UpdateInput(inputManager.GetPadState())
 
                 ' Une frame d'émulation
                 SyncLock emulationLock
@@ -176,11 +209,16 @@ Public Class MainForm
                 fps += 1
             End If
 
-            ' Touches de commande
-            If inputManager.IsKeyPressed("P") Then isPaused = Not isPaused
-            If inputManager.IsKeyPressed("R") AndAlso pceSystem IsNot Nothing Then pceSystem.Reset()
-            If inputManager.IsKeyPressed("F5") Then DoSaveState()
-            If inputManager.IsKeyPressed("F8") Then DoLoadState()
+            ' Manette : lue à chaque frame, fusionnée avec le clavier
+            If config.GamepadEnabled Then
+                inputManager.ApplyGamepad(gamepad.Poll())
+            End If
+
+            ' Commandes de l'émulateur
+            If inputManager.IsActionPressed(InputManager.ACTION_PAUSE) Then isPaused = Not isPaused
+            If inputManager.IsActionPressed(InputManager.ACTION_RESET) AndAlso pceSystem IsNot Nothing Then pceSystem.Reset()
+            If inputManager.IsActionPressed(InputManager.ACTION_SAVE_STATE) Then DoSaveState()
+            If inputManager.IsActionPressed(InputManager.ACTION_LOAD_STATE) Then DoLoadState()
 
             ' Limiteur : accumulateur en ticks (pas de dérive), Sleep grossier + spin fin
             nextFrameTick += ticksPerFrame
@@ -235,9 +273,41 @@ Public Class MainForm
         End If
     End Sub
 
+    ''' <summary>
+    ''' Bascule entre PC Engine et SuperGrafx. Les cinq jeux SuperGrafx sont reconnus
+    ''' par leur nom de fichier au chargement ; cette case permet de forcer le mode
+    ''' pour une ROM que la reconnaissance aurait manquée.
+    ''' </summary>
     Private Sub MenuToggleSuperGrafx(sender As Object, e As EventArgs)
-        statusLabel.Text = "SuperGrafx désactivé en v1"
+        superGrafxMode = superGrafxMenuItem.Checked
+
+        If String.IsNullOrEmpty(currentRomPath) Then
+            ShowStatus("Mode " & ModeName() & " : actif au prochain chargement")
+            Return
+        End If
+
+        ' Le mode change le câblage de la console : il faut la reconstruire
+        LoadRom(currentRomPath, forceMode:=True)
     End Sub
+
+    Private Function ModeName() As String
+        Return If(superGrafxMode, "SuperGrafx", "PC Engine")
+    End Function
+
+    ''' <summary>
+    ''' Reconnaît les cinq HuCards SuperGrafx d'après leur nom de fichier. C'est le
+    ''' seul moyen simple : rien dans l'en-tête d'une ROM n'indique le mode, et les
+    ''' jeux concernés se comptent sur les doigts d'une main.
+    ''' </summary>
+    Private Shared Function LooksLikeSuperGrafx(romPath As String) As Boolean
+        Dim name = System.IO.Path.GetFileNameWithoutExtension(romPath).ToLowerInvariant()
+        Dim titles = {"daimakaimura", "ghouls", "ghosts", "aldynes",
+                      "battle ace", "battle_ace", "1941", "granzort", "grandzort"}
+        For Each title In titles
+            If name.Contains(title) Then Return True
+        Next
+        Return False
+    End Function
 
     Private Sub MenuScale1x(sender As Object, e As EventArgs)
         Me.ClientSize = New System.Drawing.Size(256, 224 + menuStripMain.Height)
@@ -344,6 +414,60 @@ Public Class MainForm
             End If
         Next
         ShowStatus("Emplacement " & currentSlot & " sélectionné")
+    End Sub
+
+    ''' <summary>Ouvre la bibliothèque et lance le jeu retenu.</summary>
+    Private Sub MenuLibrary(sender As Object, e As EventArgs)
+        Using dialog = New RomLibraryForm(config)
+            If dialog.ShowDialog(Me) = System.Windows.Forms.DialogResult.OK AndAlso
+               Not String.IsNullOrEmpty(dialog.SelectedRom) Then
+                LoadROM(dialog.SelectedRom)
+            End If
+        End Using
+    End Sub
+
+    Private Sub MenuDownload(sender As Object, e As EventArgs)
+        Using dialog = New ArchiveOrgForm(config)
+            If dialog.ShowDialog(Me) = System.Windows.Forms.DialogResult.OK AndAlso
+               Not String.IsNullOrEmpty(dialog.LastDownloaded) Then
+                LoadROM(dialog.LastDownloaded)
+            End If
+        End Using
+    End Sub
+
+    Private Sub MenuConfigureKeys(sender As Object, e As EventArgs)
+        Using dialog = New KeyConfigForm(inputManager, config)
+            If dialog.ShowDialog(Me) = System.Windows.Forms.DialogResult.OK Then
+                inputManager.ApplyBindings(config)
+                ShowStatus("Touches enregistrées")
+            End If
+        End Using
+    End Sub
+
+    Private Sub MenuChooseGamesFolder(sender As Object, e As EventArgs)
+        Using dialog = New System.Windows.Forms.FolderBrowserDialog()
+            dialog.Description = "Choisir le dossier des jeux"
+            dialog.SelectedPath = config.GamesFolder
+
+            If dialog.ShowDialog() = System.Windows.Forms.DialogResult.OK Then
+                config.GamesFolder = dialog.SelectedPath
+                config.Save()
+                ShowStatus("Dossier des jeux : " & dialog.SelectedPath)
+            End If
+        End Using
+    End Sub
+
+    Private Sub MenuToggleGamepad(sender As Object, e As EventArgs)
+        config.GamepadEnabled = gamepadMenuItem.Checked
+        config.Save()
+
+        If config.GamepadEnabled Then
+            gamepad.Rescan()
+            ShowStatus("Manette activée")
+        Else
+            inputManager.ApplyGamepad(Nothing)
+            ShowStatus("Manette désactivée")
+        End If
     End Sub
 
     ''' <summary>Gestion des touches</summary>

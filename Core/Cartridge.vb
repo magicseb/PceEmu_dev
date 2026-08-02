@@ -10,8 +10,20 @@ Public MustInherit Class Cartridge
     ''' <summary>Masque de miroir, arrondi à la puissance de 2 supérieure à la taille de la ROM.</summary>
     Protected RomMask As Integer
 
+    ''' <summary>Nom affichable de la cartouche, sans chemin ni extension.</summary>
+    Public ReadOnly Property Title As String
+
     Public Sub New(romPath As String)
-        LoadROM(romPath)
+        Me.New(System.IO.Path.GetFileNameWithoutExtension(romPath), System.IO.File.ReadAllBytes(romPath))
+    End Sub
+
+    ''' <summary>
+    ''' Charge une ROM déjà en mémoire : c'est ce qui permet de lire une archive
+    ''' sans jamais écrire son contenu sur le disque.
+    ''' </summary>
+    Public Sub New(name As String, data() As Byte)
+        _Title = name
+        ApplyRomData(data)
 
         RomMask = 1
         While RomMask < RomData.Length
@@ -20,9 +32,8 @@ Public MustInherit Class Cartridge
         RomMask -= 1
     End Sub
 
-    Protected Sub LoadROM(romPath As String)
-        Dim data = System.IO.File.ReadAllBytes(romPath)
-
+    ''' <summary>Retient le contenu utile de la ROM, en-tête éventuel retiré.</summary>
+    Protected Sub ApplyRomData(data() As Byte)
         ' En-tête de 512 octets à ignorer si la taille n'est pas un multiple de 8 Ko
         If (data.Length Mod 8192) = 512 Then
             RomData = New Byte(data.Length - 513) {}
@@ -77,6 +88,10 @@ Public Class CartridgeStandard
         MyBase.New(romPath)
     End Sub
 
+    Public Sub New(name As String, data() As Byte)
+        MyBase.New(name, data)
+    End Sub
+
     Public Overrides Function GetMapper() As String
         Return "Standard"
     End Function
@@ -105,6 +120,10 @@ Public Class CartridgeSF2
 
     Public Sub New(romPath As String)
         MyBase.New(romPath)
+    End Sub
+
+    Public Sub New(name As String, data() As Byte)
+        MyBase.New(name, data)
     End Sub
 
     Public Overrides Function GetMapper() As String
@@ -153,14 +172,20 @@ End Class
 Public Class CartridgeLoader
 
     Public Shared Function LoadCartridge(romPath As String) As Cartridge
-        Dim length = New System.IO.FileInfo(romPath).Length
+        Return LoadCartridge(System.IO.Path.GetFileNameWithoutExtension(romPath),
+                             System.IO.File.ReadAllBytes(romPath))
+    End Function
+
+    ''' <summary>Choisit le mapper d'après la taille utile d'une ROM en mémoire.</summary>
+    Public Shared Function LoadCartridge(name As String, data() As Byte) As Cartridge
+        Dim length = data.Length
 
         ' Taille utile : l'éventuel en-tête de 512 octets ne compte pas
         If (length Mod 8192) = 512 Then length -= 512
 
         ' Street Fighter II' Champion Edition est la seule HuCard de 2,5 Mo
-        If length = &H280000 Then Return New CartridgeSF2(romPath)
-        Return New CartridgeStandard(romPath)
+        If length = &H280000 Then Return New CartridgeSF2(name, data)
+        Return New CartridgeStandard(name, data)
     End Function
 
 End Class

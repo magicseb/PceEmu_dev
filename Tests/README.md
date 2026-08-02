@@ -62,3 +62,31 @@ Le test vérifie la seule propriété qui compte vraiment : **une console vierge
 Pour cela il utilise une ROM de 8 Ko assemblée à la main, dont le programme incrémente un compteur en page zéro et le déverse en VRAM et dans la palette : chaque frame modifie donc la RAM, la VRAM, la palette et les registres d'adresse du VDC et du VCE.
 
 Treize cas sont couverts, dont un garde-fou vérifiant que l'image évolue bien entre les deux points de comparaison, le rejet d'une sauvegarde faite avec un autre jeu, le rejet d'un fichier étranger, l'en-tête de formatage d'une BRAM neuve et la détection des écritures en BRAM.
+
+## SuperGrafx
+
+Banc d'essai du second VDC et du VPC :
+
+```bash
+cd Tests\SuperGrafx
+dotnet run -c Release
+```
+
+Chaque VDC reçoit un fond d'une couleur qui lui est propre — opaque ou transparent selon le cas — et l'on vérifie quel chip l'emporte à l'écran. Les réglages du VPC sont écrits dans ses registres comme le ferait un jeu.
+
+Trente-trois cas couvrent le décodage de la zone vidéo (VDC #1, ses miroirs, le VPC, le VDC #2), la séparation effective des deux VRAM, la RAM de travail de 32 Ko contre les 8 Ko répétés d'une PC Engine, les combinaisons de couches actives et de modes de priorité, le découpage en fenêtres, la redirection de ST0/ST1/ST2 et la ligne d'interruption partagée.
+
+Un garde-fou vérifie d'abord que deux codes de couleur donnent bien deux teintes distinctes : sans palette initialisée, tous les pixels seraient noirs et les comparaisons passeraient sans rien prouver.
+
+## RomArchive
+
+Banc d'essai de l'ouverture des jeux :
+
+```bash
+cd Tests\RomArchive
+dotnet run -c Release
+```
+
+Le test fabrique lui-même ses archives à partir d'une ROM factice au contenu variant d'un octet à l'autre, puis compare l'empreinte de ce qui est extrait à celle de l'original : il vérifie donc les octets, pas seulement l'absence d'erreur.
+
+Seize cas couvrent la ROM nue, le ZIP contenant un fichier parasite, le choix de la plus grosse entrée quand une archive contient plusieurs ROMs, le refus d'une archive sans ROM, les extensions reconnues, et le fait que la ROM extraite donne bien une cartouche exploitable par le cœur d'émulation.

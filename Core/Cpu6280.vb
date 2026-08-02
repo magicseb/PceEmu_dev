@@ -61,7 +61,7 @@ Public Class Cpu6280
             Return True
         End If
         ' IRQ1 - VDC (vecteur $FFF8)
-        If vdc IsNot Nothing AndAlso vdc.IrqLine AndAlso (disable And &H2) = 0 Then
+        If mpu.Irq1Line AndAlso (disable And &H2) = 0 Then
             DoInterrupt(&HFFF8)
             Return True
         End If
@@ -593,9 +593,9 @@ Public Class Cpu6280
             Case &H54 : FastMode = False : Return 3                          ' CSL
             Case &HD4 : FastMode = True : Return 3                           ' CSH
             Case &HF4 : tFlagPending = True : P = P Or FLAG_T : Return 2     ' SET
-            Case &H3 : vdc.Write(0, Fetch()) : Return 5                      ' ST0
-            Case &H13 : vdc.Write(2, Fetch()) : Return 5                     ' ST1
-            Case &H23 : vdc.Write(3, Fetch()) : Return 5                     ' ST2
+            Case &H3 : mpu.WriteStoreImmediate(0, Fetch()) : Return 5        ' ST0
+            Case &H13 : mpu.WriteStoreImmediate(2, Fetch()) : Return 5       ' ST1
+            Case &H23 : mpu.WriteStoreImmediate(3, Fetch()) : Return 5       ' ST2
 
             Case &H53  ' TAM #mask
                 Dim maskTam = Fetch()

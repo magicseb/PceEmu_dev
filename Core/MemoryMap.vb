@@ -2,7 +2,8 @@
 Public Class MemoryMap
 
     Private rom() As Byte
-    Private workRam(&H1FFF) As Byte     ' 8 Ko
+    Private workRam() As Byte           ' 8 Ko sur PC Engine, 32 Ko sur SuperGrafx
+    Private workRamMask As Integer
     Private bram(&H7FF) As Byte         ' 2 Ko
     Private mpr(7) As Integer
 
@@ -19,9 +20,33 @@ Public Class MemoryMap
     Public TimerRef As CpuTimer
     Private joypad As Joypad
 
+    ' Présents uniquement en mode SuperGrafx
+    Private vdc2 As Vdc = Nothing
+    Private vpc As Vpc = Nothing
+
+    ''' <summary>Compteur de diagnostic (sans effet sur l'émulation).</summary>
+    Public Shared DbgVdc2Writes As Long = 0
+
+    ''' <summary>Vrai quand le second VDC et le VPC sont câblés.</summary>
+    Public ReadOnly Property SuperGrafx As Boolean
+        Get
+            Return vpc IsNot Nothing
+        End Get
+    End Property
+
     Public Sub New(cart As Cartridge)
+        Me.New(cart, False)
+    End Sub
+
+    ''' <summary>
+    ''' Le SuperGrafx dispose de 32 Ko de RAM de travail au lieu de 8 ;
+    ''' la PC Engine ne fait que répéter ses 8 Ko sur les quatre pages $F8-$FB.
+    ''' </summary>
+    Public Sub New(cart As Cartridge, superGrafxMode As Boolean)
         cartridge = cart
         rom = cart.RomData
+        workRamMask = If(superGrafxMode, &H7FFF, &H1FFF)
+        workRam = New Byte(workRamMask) {}
         InitializeMPR()
     End Sub
 
@@ -41,6 +66,35 @@ Public Class MemoryMap
         joypad = joypadRef
     End Sub
 
+    ''' <summary>Câble le second VDC et le VPC : le décodage de la zone vidéo change.</summary>
+    Public Sub ConnectSuperGrafx(vdc2Ref As Vdc, vpcRef As Vpc)
+        vdc2 = vdc2Ref
+        vpc = vpcRef
+    End Sub
+
+    ''' <summary>
+    ''' Ligne IRQ1 : les deux VDC la partagent sur SuperGrafx, d'où l'obligation
+    ''' pour le jeu de lire les deux registres d'état pour savoir qui a interrompu.
+    ''' </summary>
+    Public ReadOnly Property Irq1Line As Boolean
+        Get
+            If vdc.IrqLine Then Return True
+            Return vdc2 IsNot Nothing AndAlso vdc2.IrqLine
+        End Get
+    End Property
+
+    ''' <summary>
+    ''' Destination des instructions ST0/ST1/ST2 : le VDC #1, ou le VDC #2 quand le
+    ''' VPC l'a demandé via son registre $000E.
+    ''' </summary>
+    Public Sub WriteStoreImmediate(port As Integer, value As Integer)
+        If vpc IsNot Nothing AndAlso vpc.StoreImmediateTargetsVdc2 Then
+            vdc2.Write(port, value)
+        Else
+            vdc.Write(port, value)
+        End If
+    End Sub
+
     ''' <summary>Lit un octet (adresse logique 16 bits)</summary>
     Public Function ReadByte(logicalAddr As Integer) As Integer
         Dim page = mpr((logicalAddr >> 13) And 7)
@@ -52,8 +106,7 @@ Public Class MemoryMap
             ' La cartouche traduit elle-même la page en adresse ROM (miroirs, mapper)
             Return cartridge.ReadRom(page, offset)
         ElseIf page >= &HF8 AndAlso page <= &HFB Then
-            ' RAM travail (miroir 8 Ko sur PCE standard)
-            Return workRam(offset)
+            Return workRam(WorkRamIndex(page, offset))
         ElseIf page = &HF7 Then
             Return bram(offset And &H7FF)
         End If
@@ -69,7 +122,7 @@ Public Class MemoryMap
         If page = &HFF Then
             WriteIO(offset, value)
         ElseIf page >= &HF8 AndAlso page <= &HFB Then
-            workRam(offset) = CByte(value)
+            workRam(WorkRamIndex(page, offset)) = CByte(value)
         ElseIf page = &HF7 Then
             Dim slot = offset And &H7FF
             If bram(slot) <> CByte(value) Then
@@ -82,11 +135,16 @@ Public Class MemoryMap
         End If
     End Sub
 
+    ''' <summary>Adresse dans la RAM de travail : linéaire sur 32 Ko, répétée sur 8 Ko.</summary>
+    Private Function WorkRamIndex(page As Integer, offset As Integer) As Integer
+        Return (((page - &HF8) << 13) Or offset) And workRamMask
+    End Function
+
     ''' <summary>Décodage page I/O ($FF)</summary>
     Private Function ReadIO(offset As Integer) As Integer
         Select Case (offset >> 10) And 7
-            Case 0  ' $0000-$03FF : VDC
-                Return vdc.Read(offset And 3)
+            Case 0  ' $0000-$03FF : zone vidéo
+                Return ReadVideoArea(offset)
             Case 1  ' $0400-$07FF : VCE
                 Return vce.Read(offset And 7)
             Case 2  ' $0800-$0BFF : PSG
@@ -102,7 +160,7 @@ Public Class MemoryMap
                     Case 3
                         Dim st = 0
                         If TimerRef IsNot Nothing AndAlso TimerRef.IrqPending Then st = st Or &H4
-                        If vdc IsNot Nothing AndAlso vdc.IrqLine Then st = st Or &H2
+                        If Irq1Line Then st = st Or &H2
                         Return st
                     Case Else
                         Return 0
@@ -115,7 +173,7 @@ Public Class MemoryMap
     Private Sub WriteIO(offset As Integer, value As Integer)
         Select Case (offset >> 10) And 7
             Case 0
-                vdc.Write(offset And 3, value)
+                WriteVideoArea(offset, value)
             Case 1
                 vce.Write(offset And 7, value)
             Case 2
@@ -132,6 +190,37 @@ Public Class MemoryMap
                         ' Acquittement TIMER
                         If TimerRef IsNot Nothing Then TimerRef.AckIrq()
                 End Select
+        End Select
+    End Sub
+
+    ''' <summary>
+    ''' Décodage de la zone vidéo en lecture. Sur PC Engine le VDC s'y répète tous les
+    ''' quatre octets ; sur SuperGrafx c'est un bloc de 32 octets qui se répète, avec
+    ''' le VPC et le second VDC logés dans les adresses ainsi libérées.
+    ''' </summary>
+    Private Function ReadVideoArea(offset As Integer) As Integer
+        If vpc Is Nothing Then Return vdc.Read(offset And 3)
+
+        Select Case (offset And &H1F) >> 3
+            Case 0 : Return vdc.Read(offset And 3)      ' $00-$07 : VDC #1 et son miroir
+            Case 1 : Return vpc.Read(offset And 7)      ' $08-$0F : VPC
+            Case 2 : Return vdc2.Read(offset And 3)     ' $10-$17 : VDC #2 et son miroir
+            Case Else : Return &HFF                     ' $18-$1F : inutilisé
+        End Select
+    End Function
+
+    Private Sub WriteVideoArea(offset As Integer, value As Integer)
+        If vpc Is Nothing Then
+            vdc.Write(offset And 3, value)
+            Return
+        End If
+
+        Select Case (offset And &H1F) >> 3
+            Case 0 : vdc.Write(offset And 3, value)
+            Case 1 : vpc.Write(offset And 7, value)
+            Case 2
+                DbgVdc2Writes += 1
+                vdc2.Write(offset And 3, value)
         End Select
     End Sub
 
@@ -160,6 +249,7 @@ Public Class MemoryMap
 
     ''' <summary>Écrit l'état de la mémoire dans une sauvegarde.</summary>
     Public Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(workRam.Length)
         w.Write(workRam, 0, workRam.Length)
         w.Write(bram, 0, bram.Length)
         For i = 0 To 7
@@ -170,7 +260,9 @@ Public Class MemoryMap
 
     ''' <summary>Restaure l'état de la mémoire depuis une sauvegarde.</summary>
     Public Sub LoadState(r As System.IO.BinaryReader)
-        Array.Copy(r.ReadBytes(workRam.Length), workRam, workRam.Length)
+        Dim ramSize = r.ReadInt32()
+        Dim ramData = r.ReadBytes(ramSize)
+        Array.Copy(ramData, workRam, Math.Min(ramSize, workRam.Length))
         Array.Copy(r.ReadBytes(bram.Length), bram, bram.Length)
         For i = 0 To 7
             mpr(i) = r.ReadInt32()

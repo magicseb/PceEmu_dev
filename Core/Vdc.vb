@@ -33,6 +33,14 @@ Public Class Vdc
     Private cpu As Cpu6280
 
     ' Buffers de ligne réutilisés (évite les allocations par scanline)
+    ''' <summary>
+    ''' Sortie de la dernière scanline rendue, un code par pixel : -1 pour un pixel
+    ''' transparent, sinon l'index 0-511 dans la palette du VCE. C'est exactement ce
+    ''' que le vrai VDC envoie sur son bus 9 bits, et ce que le VPC mélange sur
+    ''' SuperGrafx.
+    ''' </summary>
+    Public ReadOnly LineOutput(PceConstants.SCREEN_WIDTH - 1) As Integer
+
     Private lineBgSolid(PceConstants.SCREEN_WIDTH - 1) As Boolean
     Private lineSprCovered(PceConstants.SCREEN_WIDTH - 1) As Boolean
     Private lineSpr0Mask(PceConstants.SCREEN_WIDTH - 1) As Boolean
@@ -218,7 +226,7 @@ Public Class Vdc
     End Property
 
     ''' <summary>Traite une scanline : IRQ RCR, rendu, VBlank</summary>
-    Public Sub DoScanline(scanline As Integer, framebuffer() As Integer)
+    Public Sub DoScanline(scanline As Integer)
         ' Compteur de scroll vertical : latché à BYR en début de frame,
         ' incrémenté par ligne, relatché si le jeu écrit BYR (split raster)
         If scanline = 0 Then
@@ -240,7 +248,7 @@ Public Class Vdc
         End If
 
         If scanline < DisplayHeight Then
-            RenderLine(scanline, framebuffer)
+            RenderLine(scanline)
         ElseIf scanline = DisplayHeight Then
             ' Début VBlank
             statusReg = statusReg Or ST_VD
@@ -265,9 +273,7 @@ Public Class Vdc
     End Sub
 
     ''' <summary>Rend une scanline complète (BG + sprites)</summary>
-    Private Sub RenderLine(scanline As Integer, framebuffer() As Integer)
-        Dim stride = PceConstants.SCREEN_WIDTH
-        Dim startIdx = scanline * stride
+    Private Sub RenderLine(scanline As Integer)
         Dim width = DisplayWidth
         Dim bgEnabled = (regs(R_CR) And &H80) <> 0
         Dim sprEnabled = (regs(R_CR) And &H40) <> 0
@@ -305,29 +311,27 @@ Public Class Vdc
                           (((w23 >> (8 + bit)) And 1) << 3)
 
                 If pix = 0 Then
-                    framebuffer(startIdx + x) = vce.GetColorArgb(0)
+                    LineOutput(x) = -1
                 Else
-                    framebuffer(startIdx + x) = vce.GetColorArgb((palette << 4) Or pix)
+                    LineOutput(x) = (palette << 4) Or pix
                     bgSolid(x) = True
                 End If
             Next
         Else
-            ' BG désactivé : couleur overscan (entrée 256 palette sprite 0? → noir/couleur 0)
-            Dim bgc = vce.GetColorArgb(0)
+            ' Fond éteint : le VDC n'émet plus rien
             For x = 0 To width - 1
-                framebuffer(startIdx + x) = bgc
+                LineOutput(x) = -1
             Next
         End If
 
         ' ===== Sprites =====
         If sprEnabled Then
-            RenderSpritesLine(scanline, framebuffer, startIdx, width, bgSolid)
+            RenderSpritesLine(scanline, width, bgSolid)
         End If
     End Sub
 
     ''' <summary>Rend les sprites d'une scanline (limite 16/ligne)</summary>
-    Private Sub RenderSpritesLine(scanline As Integer, framebuffer() As Integer,
-                                   startIdx As Integer, width As Integer, bgSolid() As Boolean)
+    Private Sub RenderSpritesLine(scanline As Integer, width As Integer, bgSolid() As Boolean)
         Dim sprCovered = lineSprCovered
         Array.Clear(sprCovered, 0, width)
 
@@ -427,7 +431,7 @@ Public Class Vdc
 
                 ' Priorité : devant BG, ou derrière (visible seulement si BG transparent)
                 If prio OrElse Not bgSolid(screenX) Then
-                    framebuffer(startIdx + screenX) = vce.GetColorArgb(256 + (pal << 4) + pix)
+                    LineOutput(screenX) = 256 + (pal << 4) + pix
                 End If
             Next
         Next

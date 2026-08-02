@@ -39,18 +39,29 @@ Public Class Joypad
         Return &H30 Or nibble
     End Function
 
-    ''' <summary>Met à jour depuis un dictionnaire d'état clavier</summary>
-    Public Sub UpdateFromKeys(keys As System.Collections.Generic.Dictionary(Of String, Boolean))
-        If keys Is Nothing Then Return
-        If keys.ContainsKey("Up") Then BtnUp = keys("Up")
-        If keys.ContainsKey("Down") Then BtnDown = keys("Down")
-        If keys.ContainsKey("Left") Then BtnLeft = keys("Left")
-        If keys.ContainsKey("Right") Then BtnRight = keys("Right")
-        If keys.ContainsKey("X") Then BtnI = keys("X")
-        If keys.ContainsKey("Z") Then BtnII = keys("Z")
-        If keys.ContainsKey("LShift") Then BtnSelect = keys("LShift")
-        If keys.ContainsKey("Enter") Then BtnRun = keys("Enter")
+    ''' <summary>
+    ''' Applique un état de boutons fourni par le frontend. Les clés désignent les
+    ''' boutons de la console, pas des touches : le clavier et la manette peuvent
+    ''' ainsi alimenter la même entrée.
+    ''' </summary>
+    Public Sub UpdateFromKeys(buttons As System.Collections.Generic.Dictionary(Of String, Boolean))
+        If buttons Is Nothing Then Return
+        BtnUp = Pressed(buttons, "Haut")
+        BtnDown = Pressed(buttons, "Bas")
+        BtnLeft = Pressed(buttons, "Gauche")
+        BtnRight = Pressed(buttons, "Droite")
+        BtnI = Pressed(buttons, "BoutonI")
+        BtnII = Pressed(buttons, "BoutonII")
+        BtnSelect = Pressed(buttons, "Select")
+        BtnRun = Pressed(buttons, "Run")
     End Sub
+
+    Private Shared Function Pressed(buttons As System.Collections.Generic.Dictionary(Of String, Boolean),
+                                    name As String) As Boolean
+        Dim value As Boolean
+        If buttons.TryGetValue(name, value) Then Return value
+        Return False
+    End Function
 
 
     ''' <summary>Écrit l'état de la manette dans une sauvegarde.</summary>

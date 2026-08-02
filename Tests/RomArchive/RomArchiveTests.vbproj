@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>PceEmu</RootNamespace>
+    <AssemblyName>RomArchiveTests</AssemblyName>
+    <StartupObject>PceEmu.RomArchiveTest</StartupObject>
+    <OptionStrict>Off</OptionStrict>
+    <OptionExplicit>On</OptionExplicit>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpCompress" Version="1.0.0" />
+    <!-- RomArchive ne dépend que de System.IO : il se compile hors WinForms -->
+    <Compile Include="../../Frontend/RomArchive.vb" />
+    <Compile Include="../../Core/Cartridge.vb" />
+    <Compile Include="Program.vb" />
+  </ItemGroup>
+
+</Project>

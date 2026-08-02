@@ -56,6 +56,7 @@ Le HuC6280 n'est **pas** un 6502 standard. Détails critiques implémentés (tou
 - **DMA VRAM-VRAM** déclenchée par l'écriture du MSB de LENR
 - **Fond** : BAT (12 bits index + 4 bits palette), tiles 8×8 en 4 bitplanes (words y et y+8) ; taille de carte via MWR (32/64/128 × 32/64)
 - **Scroll vertical** : compteur interne latché à BYR en début de frame, +1 par ligne, **relatché à la ligne suivant toute écriture de BYR** — indispensable pour les splits raster (HUD, parallaxe)
+- **Sortie du VDC** : chaque scanline est produite sous forme de codes VCE (-1 = rien émis), ce qui permet au VPC de mélanger deux VDC sans dupliquer le moteur de rendu
 - **Sprites** : SATB interne 64×4 words ; Y-64, X-32 ; tailles 16/32 × 16/32/64 (CGX/CGY) ; cellules 16×16 de 64 words, stride cellule = $40 (X) / $80 (Y) ; **le bit 0 du code pattern est ignoré par le hardware** ; flips X/Y, priorité devant/derrière le fond, limite 16 sprites/ligne avec flag overflow
 - **Collision sprite 0** : drapeau d'état bit 0 levé dès qu'un pixel opaque d'un autre sprite recouvre un pixel opaque du sprite 0, IRQ si CR bit 0 ; la détection ignore l'occlusion entre sprites et la priorité vis-à-vis du fond (un sprite invisible collisionne quand même), et le drapeau est effacé à la lecture de l'état
 - **Résolution dynamique** : largeur = (HDW+1)×8 (256/320/512 observées), hauteur = VDW+1 ; exposées via `DisplayWidth`/`DisplayHeight`
@@ -112,15 +113,42 @@ L'écran noir initial venait de `CreateGraphics()` : le dessin est effacé au pr
 | Mapper SF2 factice | SF2' illisible au-delà de 1 Mo | Banques portées par la cartouche |
 | Signature ROM débordait | Sauvegarde impossible hors Release | Accumulateur en 64 bits |
 
+## 🖥️🖥️ SuperGrafx
+
+Deux VDC, chacun avec sa VRAM, mélangés par le **VPC HuC6202**.
+
+Le point à comprendre : chaque VDC résout lui-même la priorité entre son fond et ses sprites, puis n'émet qu'un seul pixel sur un bus de 9 bits — 4 bits de couleur, 4 bits de palette, 1 bit « sprite ou fond ». Le VPC ne voit donc jamais la différence entre un sprite de priorité haute et un sprite de priorité basse ; il ne fait qu'ordonner deux pixels déjà résolus.
+
+**Décodage.** En mode SuperGrafx, la zone vidéo n'est plus le VDC répété tous les quatre octets, mais un bloc de 32 octets : `$00-$07` VDC #1 et son miroir, `$08-$0F` VPC, `$10-$17` VDC #2 et son miroir. C'est ce qui permet à un jeu PC Engine bien écrit de fonctionner tel quel.
+
+**Fenêtres.** Deux registres de 10 bits donnent la largeur de deux fenêtres, comptée depuis le bord gauche de l'écran *physique* : la zone affichée ne commence qu'à la valeur `$40`, si bien qu'une fenêtre plus étroite est invisible. Les quatre régions ainsi découpées — aucune fenêtre, fenêtre 1, fenêtre 2, recouvrement — ont chacune leur réglage de 4 bits : VDC #1 actif, VDC #2 actif, et un mode de priorité sur 2 bits.
+
+**Priorités.** Modes 0 et 3 : le VDC #1 passe intégralement devant le VDC #2. Modes 1 et 2 : les sprites des deux chips passent devant les deux fonds. Les sources se contredisent sur la distinction exacte entre les modes 1 et 2 — les notes de Charles MacDonald et les relevés sur console (fil nesdev, Daimakaimura) ne concordent pas — et le choix retenu est celui vérifié sur machine réelle. Les cinq jeux SuperGrafx utilisent de toute façon le mode par défaut la plupart du temps.
+
+**Divers.** 32 Ko de RAM de travail linéaires sur les pages `$F8-$FB` au lieu de 8 Ko répétés ; la ligne IRQ1 est partagée, un jeu doit lire les deux registres d'état pour savoir qui a interrompu ; le bit 0 de `$000E` redirige ST0/ST1/ST2 vers le second VDC.
+
+**Résultat.** Les cinq HuCards SuperGrafx démarrent et animent. Daimakaimura écrit 9 526 fois dans les registres du VPC sur 1800 frames, contre une dizaine pour les autres jeux : il est bien le seul à exploiter les fenêtres, en les redécoupant à chaque ligne — ce que la documentation laissait attendre. Lancés en mode PC Engine, ces jeux ne produisent qu'un écran uni : ils dépendent réellement du matériel supplémentaire.
+
+Source : « NEC SuperGrafx hardware notes », Charles MacDonald.
+
 ## 💾 Sauvegarde d'état et BRAM
 
 **Sauvegarde d'état.** Chaque composant sérialise ses propres champs privés (`SaveState`/`LoadState` sur CPU, VDC, VCE, PSG, Timer, manette, MMU et cartouche), `PceSystem` orchestre. Le fichier est compressé en gzip et s'ouvre sur la signature `PCEST`, un numéro de format et une empreinte de la ROM : charger l'état d'un autre jeu est refusé plutôt que de produire un plantage inexplicable. Les événements DDA en attente ne sont pas sauvegardés — ils ne vivent que le temps d'une frame et le jeu les reconstruit.
 
 **BRAM.** Les 2 Ko sont relus au chargement d'une ROM et réécrits quand un jeu y a touché (`BramModified` évite les écritures inutiles). Le fichier est **unique et partagé par tous les jeux**, comme la pile de la vraie console. Une BRAM neuve est initialisée avec l'en-tête de formatage `HUBM` : sans lui, les jeux la voient comme vierge et refusent d'y écrire.
 
+## ⌨️ Entrées et ouverture des jeux
+
+**Disposition clavier.** Plutôt que de tester si l'utilisateur est français, on demande à Windows quelle touche occupe une position physique donnée : `MapVirtualKey(scanCode, MAPVK_VSC_TO_VK)`. Le code de balayage `$2C` désigne la touche sous l'annulaire gauche — « Z » en QWERTY, « W » en AZERTY, « Y » en QWERTZ. Les trois dispositions sont donc gérées sans jamais les énumérer, et une disposition exotique le sera aussi. Hors Windows, l'appel échoue proprement et les valeurs QWERTY servent de repli.
+
+**Configuration.** Les actions portent un nom (`BoutonI`, `Run`, `Sauvegarder`…) et non une touche. `Joypad.UpdateFromKeys` reçoit désormais des noms de boutons de console, ce qui permet au clavier et à la manette d'alimenter la même entrée sans se marcher dessus.
+
+**Manette Xbox.** XInput appelé directement dans `xinput1_4.dll`, avec repli sur `xinput9_1_0.dll` pour les Windows plus anciens. Aucune dépendance ajoutée. Si aucune des deux n'est présente, la manette est déclarée absente une fois pour toutes plutôt que de retenter à chaque frame.
+
+**Archives.** Le ZIP passe par la bibliothèque standard, le 7z par SharpCompress (**1.0.0** ; l'avis CVE-2026-44788 / GHSA-6c8g-7p36-r338 sur `WriteToDirectory()` est corrigé depuis la 0.48.0, et de toute façon cette API n'est jamais appelée ici). Dans les deux cas l'entrée retenue est la plus grosse portant une extension de ROM, et elle est lue **en mémoire** : rien n'est écrit sur le disque, ce qui met du même coup le programme hors de portée des failles de traversée de répertoire. La taille décompressée est plafonnée à 8 Mo — aucune HuCard ne dépasse 2,5 Mo.
+
 ## 🗺️ Feuille de route
 
-1. **SuperGrafx** : réintégrer Vpc.vb (VDC2 + mixage fenêtres/priorités)
 2. **Stéréo** : exploiter les balances L/R déjà décodées (sortie actuellement mono)
 5. Verrou d'écriture de la BRAM ($1803), multitap, CD-ROM²
 
@@ -129,6 +157,8 @@ L'écran noir initial venait de `CreateGraphics()` : le dessin est effacé au pr
 - `Tests/CollisionSprite0` : banc d'essai pilotant le VDC par ses registres, sans ROM (8 cas sur la collision sprite 0)
 - `Tests/LfoPsg` : banc d'essai du LFO, comparaison échantillon par échantillon avec des références calculées (9 cas, dont un garde-fou contre les tests insensibles)
 - `Tests/MapperSf2` : banc d'essai du mapper, ROM factice dont chaque page porte son numéro (20 cas : banques, zone fixe, miroirs, écritures neutres)
+- `Tests/RomArchive` : banc d'essai de l'ouverture des jeux (16 cas : ROM nue, ZIP, 7z, choix de l'entrée, refus d'une archive sans ROM)
+- `Tests/SuperGrafx` : banc d'essai du second VDC et du VPC (33 cas : décodage, VRAM séparées, RAM 32 Ko, priorités, fenêtres, ST0-ST2, IRQ partagée)
 - `Tests/SaveState` : banc d'essai des sauvegardes, ROM assemblée à la main dont l'état évolue à chaque frame (13 cas, dont un garde-fou et le rejet des fichiers étrangers)
 - Mode `--test-console <rom>` dans `Program.vb` (compte les pixels sans UI)
 - Compteurs de debug dans `Psg`/`CpuTimer` (`DbgWriteCount`, `DbgDdaWrites`…) et `PceSystem.DbgPsgState()` — inoffensifs en production, précieux pour diagnostiquer une ROM récalcitrante
