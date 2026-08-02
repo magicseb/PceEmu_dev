@@ -40,6 +40,7 @@ Public Class Psg
     Public Shared DbgFreqWrites As Long = 0
     Public Shared DbgDdaWrites As Long = 0
     Public Shared DbgNoiseWrites As Long = 0
+    Public Shared DbgLfoEnableWrites As Long = 0
 
     ' Tables d'atténuation logarithmiques du hardware :
     ' volume canal 5 bits = 1.5 dB/pas, balance 4 bits = 3 dB/pas
@@ -139,10 +140,13 @@ Public Class Psg
                     channels(selectedChannel).NoiseEnabled = (value And &H80) <> 0
                     channels(selectedChannel).NoiseFreq = value And &H1F
                 End If
-            Case 8
+            Case 8  ' $0808 : multiplicateur de période du canal modulateur
                 lfoFreq = value
-            Case 9
+            Case 9  ' $0809 : bits 0-1 = profondeur, bit 7 = maintien du LFO à zéro
                 lfoControl = value
+                If (value And &H3) <> 0 Then DbgLfoEnableWrites += 1
+                ' Le bit 7 remet le modulateur au début de sa forme d'onde
+                If (value And &H80) <> 0 Then channels(1).Phase = 0
         End Select
     End Sub
 
@@ -162,6 +166,19 @@ Public Class Psg
             chanGain(chIdx) = VolTable(ch.Volume) * (chL * mainL + chR * mainR) * 0.5 * 350.0
         Next
 
+        ' LFO : le canal 1 cesse d'être audible et module la période du canal 0.
+        ' $0809 bits 0-1 : 0 = désactivé, 1 = ×1, 2 = ×16, 3 = ×256 ; bit 7 = LFO maintenu à zéro.
+        Dim lfoDepth = lfoControl And &H3
+        Dim lfoEnabled = lfoDepth <> 0              ' Le canal 1 devient modulateur, donc muet
+        Dim lfoHeld = (lfoControl And &H80) <> 0    ' Modulateur figé : plus aucune modulation
+        Dim lfoShift = (lfoDepth - 1) * 4
+        Dim lfoStep As Double = 0
+        If lfoEnabled AndAlso Not lfoHeld Then
+            ' Période du modulateur = période du canal 1 × registre $0808
+            Dim lfoPeriod = Math.Max(1, channels(1).Freq * lfoFreq)
+            lfoStep = 3579545.0 / lfoPeriod / PceConstants.AUDIO_SAMPLE_RATE
+        End If
+
         ' Pointeurs de relecture des événements DDA (timeline de la frame)
         Dim ddaPtr(5) As Integer
         Dim ddaVal(5) As Integer
@@ -178,8 +195,21 @@ Public Class Psg
             Dim mixed As Integer = 0
             Dim frameCycle As Long = CLng(cyclesThisFrame) * s \ numSamples
 
+            ' Sortie courante du modulateur, centrée puis décalée selon la profondeur
+            Dim lfoDelta As Integer = 0
+            If lfoEnabled AndAlso Not lfoHeld Then
+                Dim chLfo = channels(1)
+                chLfo.Phase += lfoStep
+                While chLfo.Phase >= 32.0
+                    chLfo.Phase -= 32.0
+                End While
+                lfoDelta = (chLfo.Waveform(CInt(Math.Floor(chLfo.Phase)) And &H1F) - 16) << lfoShift
+            End If
+
             For chIdx = 0 To 5
                 Dim ch = channels(chIdx)
+                ' Le canal 1 sert de modulateur : il ne produit aucun son
+                If lfoEnabled AndAlso chIdx = 1 Then Continue For
                 If Not ch.Enabled Then Continue For
                 If chanGain(chIdx) < 0.01 Then Continue For
 
@@ -205,8 +235,13 @@ Public Class Psg
                     Next
                     sample = If((ch.NoiseLfsr And 1) <> 0, 15, -16)
                 Else
+                    ' Le LFO ajoute sa sortie signée à la période du canal 0 (12 bits)
+                    Dim basePeriod = ch.Freq
+                    If lfoEnabled AndAlso chIdx = 0 Then
+                        basePeriod = (basePeriod + lfoDelta) And &HFFF
+                    End If
                     ' Période 0 = 4096 sur le hardware
-                    Dim period = If(ch.Freq = 0, 4096, ch.Freq)
+                    Dim period = If(basePeriod = 0, 4096, basePeriod)
                     ' Fréquence du ton : 3.58 MHz / (32 × période)
                     ' Au-dessus de Nyquist (période < ~6) : sortir la moyenne (évite l'aliasing → bruit)
                     If period < 6 Then

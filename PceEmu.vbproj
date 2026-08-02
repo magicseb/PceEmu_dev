@@ -22,4 +22,9 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Les bancs d'essai ont leur propre projet et leur propre point d'entrée -->
+    <Compile Remove="Tests/**" />
+  </ItemGroup>
+
 </Project>

@@ -17,6 +17,10 @@ Public Class Vdc
     Private statusReg As Integer = 0
     Public IrqLine As Boolean = False
 
+    ' Compteurs de diagnostic (sans effet sur l'émulation)
+    Public Shared DbgCollisionCount As Long = 0
+    Public Shared DbgCollisionIrqCount As Long = 0
+
     ' SATB DMA
     Private satbPending As Boolean = False
     Private satbAuto As Boolean = False
@@ -31,6 +35,7 @@ Public Class Vdc
     ' Buffers de ligne réutilisés (évite les allocations par scanline)
     Private lineBgSolid(PceConstants.SCREEN_WIDTH - 1) As Boolean
     Private lineSprCovered(PceConstants.SCREEN_WIDTH - 1) As Boolean
+    Private lineSpr0Mask(PceConstants.SCREEN_WIDTH - 1) As Boolean
 
     ' Indices registres
     Private Const R_MAWR = 0
@@ -325,6 +330,12 @@ Public Class Vdc
                                    startIdx As Integer, width As Integer, bgSolid() As Boolean)
         Dim sprCovered = lineSprCovered
         Array.Clear(sprCovered, 0, width)
+
+        ' Pixels opaques du sprite 0 sur cette ligne (détection de collision)
+        Dim spr0Mask = lineSpr0Mask
+        Array.Clear(spr0Mask, 0, width)
+        Dim spr0OnLine = False
+
         Dim count = 0
 
         For sprIdx = 0 To 63
@@ -345,6 +356,9 @@ Public Class Vdc
             End Select
 
             If scanline < sy Or scanline >= sy + sprH Then Continue For
+
+            Dim isSprite0 = (sprIdx = 0)
+            If isSprite0 Then spr0OnLine = True
 
             count += 1
             If count > 16 Then
@@ -375,7 +389,6 @@ Public Class Vdc
             For px = 0 To sprW - 1
                 Dim screenX = sx + px
                 If screenX < 0 Or screenX >= width Then Continue For
-                If sprCovered(screenX) Then Continue For
 
                 Dim colInSpr = If(xFlip, sprW - 1 - px, px)
                 Dim cellX = colInSpr >> 4
@@ -394,6 +407,22 @@ Public Class Vdc
                           (((w3 >> bit) And 1) << 3)
 
                 If pix = 0 Then Continue For
+
+                ' Collision sprite 0 : deux pixels opaques superposés, que le sprite
+                ' soit visible ou non (occlusion et priorité n'entrent pas en jeu)
+                If isSprite0 Then
+                    spr0Mask(screenX) = True
+                ElseIf spr0OnLine AndAlso spr0Mask(screenX) Then
+                    statusReg = statusReg Or ST_CR
+                    DbgCollisionCount += 1
+                    If (regs(R_CR) And &H1) <> 0 Then
+                        AssertIrq()
+                        DbgCollisionIrqCount += 1
+                    End If
+                End If
+
+                ' Le premier sprite rencontré occupe le pixel, les suivants sont masqués
+                If sprCovered(screenX) Then Continue For
                 sprCovered(screenX) = True
 
                 ' Priorité : devant BG, ou derrière (visible seulement si BG transparent)

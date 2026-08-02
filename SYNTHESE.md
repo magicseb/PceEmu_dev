@@ -57,6 +57,7 @@ Le HuC6280 n'est **pas** un 6502 standard. Détails critiques implémentés (tou
 - **Fond** : BAT (12 bits index + 4 bits palette), tiles 8×8 en 4 bitplanes (words y et y+8) ; taille de carte via MWR (32/64/128 × 32/64)
 - **Scroll vertical** : compteur interne latché à BYR en début de frame, +1 par ligne, **relatché à la ligne suivant toute écriture de BYR** — indispensable pour les splits raster (HUD, parallaxe)
 - **Sprites** : SATB interne 64×4 words ; Y-64, X-32 ; tailles 16/32 × 16/32/64 (CGX/CGY) ; cellules 16×16 de 64 words, stride cellule = $40 (X) / $80 (Y) ; **le bit 0 du code pattern est ignoré par le hardware** ; flips X/Y, priorité devant/derrière le fond, limite 16 sprites/ligne avec flag overflow
+- **Collision sprite 0** : drapeau d'état bit 0 levé dès qu'un pixel opaque d'un autre sprite recouvre un pixel opaque du sprite 0, IRQ si CR bit 0 ; la détection ignore l'occlusion entre sprites et la priorité vis-à-vis du fond (un sprite invisible collisionne quand même), et le drapeau est effacé à la lecture de l'état
 - **Résolution dynamique** : largeur = (HDW+1)×8 (256/320/512 observées), hauteur = VDW+1 ; exposées via `DisplayWidth`/`DisplayHeight`
 
 ## 🎨 VCE HuC6260
@@ -68,6 +69,8 @@ Le HuC6280 n'est **pas** un 6502 standard. Détails critiques implémentés (tou
 1. **Volumes logarithmiques** : le hardware atténue de **1,5 dB par pas de volume** (5 bits) et **3 dB par pas de balance** (4 bits par côté, canal et général). En linéaire, un accompagnement à 16/31 joue à 52% au lieu de ~7,5% → bouillie sonore. Tables `VolTable`/`BalTable`, gain effectif par canal recalculé une fois par frame.
 
 2. **DDA horodaté** : les jeux jouent voix et percussions en écrivant les échantillons un à un (~7 kHz) via le CPU. Générer l'audio une fois par frame en ne gardant que la dernière valeur réduit le sample à un continu inaudible. Chaque écriture DDA est donc **timestampée au cycle CPU** (`Psg.CycleProvider`) puis la séquence est rejouée sur la timeline de la frame. Mesuré sur Andre Panza : 21 058 écritures DDA sur les 600 premières frames.
+
+3. **LFO** : le canal 1 quitte le mixage et devient modulateur. Sa sortie, centrée sur zéro, est décalée de 0, 4 ou 8 bits selon les bits 0-1 de $0809 (×1, ×16, ×256) puis ajoutée à la période 12 bits du canal 0. La période du modulateur vaut celle du canal 1 multipliée par le registre $0808 — c'est ce produit qui donne des vibratos de quelques hertz. Le bit 7 de $0809 fige le modulateur : plus aucune modulation, mais le canal 1 reste muet.
 
 Également : période 0 = 4096 (hardware), sortie de la moyenne de la waveform au-delà de Nyquist (anti-aliasing), bruit LFSR borné, mixage mono clampé sans clipping.
 
@@ -104,16 +107,20 @@ L'écran noir initial venait de `CreateGraphics()` : le dessin est effacé au pr
 | Mixage ×8 | Clipping massif (« bruits bizarres ») | Gain sûr + volumes log |
 | Volume linéaire | Bouillie sans dynamique | Tables 1,5 dB / 3 dB |
 | DDA = dernière valeur de la frame | Voix et coups inaudibles | Événements timestampés au cycle |
+| Collision sprite 0 absente | Jeux la testant en boucle | Masque du sprite 0 par scanline |
+| LFO PSG ignoré | Vibratos et sirènes absents | Canal 1 en modulateur de période |
+| Mapper SF2 factice | SF2' illisible au-delà de 1 Mo | Banques portées par la cartouche |
 
 ## 🗺️ Feuille de route
 
 1. **SuperGrafx** : réintégrer Vpc.vb (VDC2 + mixage fenêtres/priorités)
 2. **Stéréo** : exploiter les balances L/R déjà décodées (sortie actuellement mono)
-3. **LFO PSG** (canaux 0-1)
-4. **Mapper SF2** : à valider avec une ROM Street Fighter II'
-5. Collision sprite 0, sauvegarde d'état, BRAM persistante
+5. Sauvegarde d'état, BRAM persistante
 
 ## 🔧 Outils de diagnostic intégrés
 
+- `Tests/CollisionSprite0` : banc d'essai pilotant le VDC par ses registres, sans ROM (8 cas sur la collision sprite 0)
+- `Tests/LfoPsg` : banc d'essai du LFO, comparaison échantillon par échantillon avec des références calculées (9 cas, dont un garde-fou contre les tests insensibles)
+- `Tests/MapperSf2` : banc d'essai du mapper, ROM factice dont chaque page porte son numéro (20 cas : banques, zone fixe, miroirs, écritures neutres)
 - Mode `--test-console <rom>` dans `Program.vb` (compte les pixels sans UI)
 - Compteurs de debug dans `Psg`/`CpuTimer` (`DbgWriteCount`, `DbgDdaWrites`…) et `PceSystem.DbgPsgState()` — inoffensifs en production, précieux pour diagnostiquer une ROM récalcitrante

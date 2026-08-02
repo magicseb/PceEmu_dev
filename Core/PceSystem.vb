@@ -95,6 +95,10 @@ Public Class PceSystem
         End Get
     End Property
 
+    Public Function DbgMapper() As String
+        Return cartridge.GetMapper()
+    End Function
+
     Public Function DbgPsgState() As String
         Return psg.DbgState()
     End Function

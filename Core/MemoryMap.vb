@@ -2,7 +2,6 @@
 Public Class MemoryMap
 
     Private rom() As Byte
-    Private romMask As Integer
     Private workRam(&H1FFF) As Byte     ' 8 Ko
     Private bram(&H7FF) As Byte         ' 2 Ko
     Private mpr(7) As Integer
@@ -20,12 +19,6 @@ Public Class MemoryMap
     Public Sub New(cart As Cartridge)
         cartridge = cart
         rom = cart.RomData
-        ' Masque pour miroirs ROM (puissance de 2)
-        romMask = 1
-        While romMask < rom.Length
-            romMask <<= 1
-        End While
-        romMask -= 1
         InitializeMPR()
     End Sub
 
@@ -53,10 +46,8 @@ Public Class MemoryMap
         If page = &HFF Then
             Return ReadIO(offset)
         ElseIf page < &H80 Then
-            ' ROM avec miroirs
-            Dim addr = ((page << 13) Or offset) And romMask
-            If addr < rom.Length Then Return rom(addr)
-            Return &HFF
+            ' La cartouche traduit elle-même la page en adresse ROM (miroirs, mapper)
+            Return cartridge.ReadRom(page, offset)
         ElseIf page >= &HF8 AndAlso page <= &HFB Then
             ' RAM travail (miroir 8 Ko sur PCE standard)
             Return workRam(offset)
@@ -79,10 +70,8 @@ Public Class MemoryMap
         ElseIf page = &HF7 Then
             bram(offset And &H7FF) = CByte(value)
         ElseIf page < &H80 Then
-            ' Écriture en zone ROM : mapper SF2
-            If TypeOf cartridge Is CartridgeSF2 AndAlso (offset And &H1FFC) = &H1FF0 Then
-                CType(cartridge, CartridgeSF2).SetBankRegister(offset And 3, value)
-            End If
+            ' Sans effet, sauf sur une cartouche à mapper
+            cartridge.WriteRom(page, offset, value)
         End If
     End Sub
 

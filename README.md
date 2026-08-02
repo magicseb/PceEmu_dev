@@ -7,12 +7,12 @@
 ## Fonctionnalités
 
 - **CPU HuC6280** : table d'opcodes complète et conforme au hardware (TAM=$53, TMA=$43, CSL=$54, CSH=$D4, ST0/1/2, transferts de blocs TII/TDD/TIN/TIA/TAI, BBRi/BBSi, RMBi/SMBi, flag T, mode BCD) ; vecteurs corrects (RESET=$FFFE, IRQ1=$FFF8, TIMER=$FFFA, IRQ2/BRK=$FFF6) ; IRQ level-triggered avec masque $1402/$1403
-- **VDC (HuC6270)** : VRAM 32K words, rendu tilemap + sprites par scanline avec priorités et flips, limite 16 sprites/ligne, DMA VRAM-VRAM et SATB, IRQ RCR/VBlank, compteur de scroll vertical latché (splits raster/parallaxe corrects), résolution d'affichage dynamique (256/320/512 de large)
+- **VDC (HuC6270)** : VRAM 32K words, rendu tilemap + sprites par scanline avec priorités et flips, limite 16 sprites/ligne, collision du sprite 0 avec IRQ, DMA VRAM-VRAM et SATB, IRQ RCR/VBlank, compteur de scroll vertical latché (splits raster/parallaxe corrects), résolution d'affichage dynamique (256/320/512 de large)
 - **VCE (HuC6260)** : palette 512 couleurs 9 bits (G3R3B3) avec cache ARGB
-- **PSG 6 canaux** : waveform 32×5 bits, **volumes logarithmiques conformes au hardware** (1,5 dB/pas volume, 3 dB/pas balance), **DDA timestampé au cycle CPU** (voix et effets de coups restitués), bruit LFSR, période 0 = 4096, anti-aliasing au-delà de Nyquist
+- **PSG 6 canaux** : waveform 32×5 bits, **volumes logarithmiques conformes au hardware** (1,5 dB/pas volume, 3 dB/pas balance), **DDA timestampé au cycle CPU** (voix et effets de coups restitués), bruit LFSR, **LFO** (le canal 1 module la période du canal 0 en ×1/×16/×256), période 0 = 4096, anti-aliasing au-delà de Nyquist
 - **Timer** : prescaler /1024 cycles, IRQ TIMER avec acquittement $1403
 - **Joypad** : nibbles actifs bas via SEL/CLR
-- **Mapper SF2** : structure présente (Street Fighter II' 2,5 Mo) — non testé faute de ROM
+- **Mapper SF2** : Street Fighter II' Champion Edition (2,5 Mo) — 512 Ko fixes plus quatre banques de 512 Ko commutées par l'adresse écrite en $1FF0-$1FF3
 - **Rendu GDI+** : bitmap persistant + événement Paint + double-buffering, recadrage sur la résolution active avec conservation du ratio, mise à l'échelle nearest-neighbor
 - **Audio NAudio** : sortie 44,1 kHz mono, buffer 500 ms avec rejet propre en cas de dépassement, pré-roll anti-famine
 
@@ -21,10 +21,8 @@
 - ❌ SuperGrafx (VDC2/VPC) : retiré temporairement, à réintégrer
 - ❌ CD-ROM² / Arcade Card
 - ❌ Sauvegarde d'état
-- ❌ LFO PSG
 - ❌ Sortie audio mono (pas de stéréo balancée)
 - ❌ Timing VDC par scanline (pas mid-scanline)
-- ❌ Collision sprite 0 non implémentée
 
 ## Prérequis
 
@@ -104,6 +102,10 @@ PceEmu/
 │   ├── Direct3D11Renderer.vb # Rendu GDI+ (nom historique) : bitmap + Paint + Invalidate
 │   ├── AudioOut.vb           # NAudio mono, buffer 500 ms, pré-roll
 │   └── Input.vb              # État clavier
+├── Tests/                    # Bancs d'essai (projets séparés, hors PceEmu.sln)
+│   ├── CollisionSprite0/     # Vérifie la collision du sprite 0 via les registres VDC
+│   ├── LfoPsg/               # Vérifie le LFO du PSG contre des références calculées
+│   └── MapperSf2/            # Vérifie le mapper SF2 avec une ROM factice à motif connu
 ├── Program.vb                # Point d'entrée (+ mode --test-console)
 ├── PceEmu.vbproj             # Projet (.NET 8, RemoveIntegerChecks, NAudio)
 └── PceEmu.sln
@@ -125,7 +127,7 @@ C'est la seule dépendance : SharpDX a été abandonné au profit de GDI+.
 4. ✅ **Joypad** — navigation des menus validée
 5. ✅ **PSG** — musique juste (fréquences vérifiées par analyse spectrale), voix DDA restituées
 6. ❌ **SuperGrafx** — à réintégrer
-7. ⚠️ **Mapper SF2** — implémenté, non testé
+7. ✅ **Mapper SF2** — Street Fighter II' démarre et anime, 1662 commutations de banque en 3600 frames
 
 ## Notes techniques
 
@@ -135,8 +137,11 @@ C'est la seule dépendance : SharpDX a été abandonné au profit de GDI+.
 - VRAM adressée en words 16 bits, écriture VWR = latch LSB puis MSB
 - Auto-incrément d'adresse VRAM selon CR bits 11-12 (1/32/64/128)
 - Bit 0 du code pattern sprite ignoré (cellules de 64 words, stride $40/$80)
+- Collision du sprite 0 évaluée sur les pixels opaques, quel que soit l'ordre d'affichage
 - Volumes PSG logarithmiques (1,5 dB par pas) — indispensable pour l'équilibre musical
 - DDA : chaque écriture est horodatée au cycle CPU et rejouée sur la timeline de la frame (sans cela, voix et coups sont inaudibles)
+- Mapper SF2 : c'est l'adresse écrite qui sélectionne la banque ($1FF0 à $1FF3), la valeur écrite est ignorée ; le mapping est porté par la cartouche, pas par la MMU
+- LFO : le canal 1 cesse d'être audible et sa sortie signée s'ajoute à la période du canal 0 ; sa propre période vaut celle du canal 1 multipliée par $0808 ; le bit 7 de $0809 fige le modulateur sans rendre le canal 1 audible
 
 ### Performance
 - `RemoveIntegerChecks=true` dans le vbproj (les vérifications d'overflow VB coûtent très cher dans la boucle CPU)
@@ -154,6 +159,9 @@ R : Compiler et lancer en **Release**, sans débogueur (Ctrl+F5). Vérifier le c
 
 **Q : Le son crépite au démarrage**
 R : Un pré-roll de 60 ms est déjà appliqué ; si cela persiste, augmenter `DesiredLatency` dans `AudioOut.vb`.
+
+**Q : Comment vérifier une fonction du VDC sans ROM ?**
+R : Voir `Tests/README.md`. Le banc d'essai de la collision sprite 0 se lance avec `dotnet run -c Release` et sert de modèle.
 
 **Q : Une ROM ne boote pas**
 R : Les ROMs avec en-tête (taille Mod 8192 = 512) sont gérées. Signaler la ROM concernée pour diagnostic.

@@ -1,15 +1,29 @@
-''' <summary>Classe de base pour cartridges</summary>
+''' <summary>
+''' Classe de base des cartouches HuCard.
+''' C'est la cartouche qui traduit une page logique (MPR) en adresse ROM :
+''' un mapper n'a ainsi rien à changer dans la MMU.
+''' </summary>
 Public MustInherit Class Cartridge
+
     Public RomData() As Byte
-    
+
+    ''' <summary>Masque de miroir, arrondi à la puissance de 2 supérieure à la taille de la ROM.</summary>
+    Protected RomMask As Integer
+
     Public Sub New(romPath As String)
         LoadROM(romPath)
+
+        RomMask = 1
+        While RomMask < RomData.Length
+            RomMask <<= 1
+        End While
+        RomMask -= 1
     End Sub
-    
+
     Protected Sub LoadROM(romPath As String)
         Dim data = System.IO.File.ReadAllBytes(romPath)
-        
-        ' Détection en-tête (512 octets à ignorer si taille Mod 8192 = 512)
+
+        ' En-tête de 512 octets à ignorer si la taille n'est pas un multiple de 8 Ko
         If (data.Length Mod 8192) = 512 Then
             RomData = New Byte(data.Length - 513) {}
             System.Array.Copy(data, 512, RomData, 0, data.Length - 512)
@@ -17,75 +31,106 @@ Public MustInherit Class Cartridge
             RomData = data
         End If
     End Sub
-    
+
+    ''' <summary>Lit un octet dans la zone ROM (pages $00-$7F).</summary>
+    Public Overridable Function ReadRom(page As Integer, offset As Integer) As Integer
+        Dim addr = ((page << 13) Or offset) And RomMask
+        If addr < RomData.Length Then Return RomData(addr)
+        Return &HFF
+    End Function
+
+    ''' <summary>Écriture dans la zone ROM : sans effet, sauf pour les cartouches à mapper.</summary>
+    Public Overridable Sub WriteRom(page As Integer, offset As Integer, value As Integer)
+    End Sub
+
     Public MustOverride Function GetMapper() As String
+
 End Class
 
-''' <summary>Cartridge standard (ROM linéaire)</summary>
+''' <summary>Cartouche standard : ROM linéaire avec miroirs.</summary>
 Public Class CartridgeStandard
     Inherits Cartridge
-    
+
     Public Sub New(romPath As String)
         MyBase.New(romPath)
     End Sub
-    
+
     Public Overrides Function GetMapper() As String
         Return "Standard"
     End Function
+
 End Class
 
-''' <summary>Cartridge avec mapper SF2 (Street Fighter II') - 2.5 Mo ROM</summary>
+''' <summary>
+''' Cartouche Street Fighter II' Champion Edition (2,5 Mo).
+'''
+''' Les 512 premiers kilooctets sont câblés sur les pages $00-$3F. Les 2 Mo restants
+''' forment quatre banques de 512 Ko dont une seule est visible à la fois, sur les
+''' pages $40-$7F. C'est l'ADRESSE écrite ($1FF0 à $1FF3) qui choisit la banque :
+''' la valeur écrite n'a aucune importance.
+''' </summary>
 Public Class CartridgeSF2
     Inherits Cartridge
-    
-    Private bankHigh As Byte = 0  ' Banque courante pour zone haute
-    Private Const BANK_SIZE = &H20000  ' 128 Ko par banque
-    Private Const BANKS_COUNT = &H14   ' 20 banques
-    
+
+    Private Const FIXED_SIZE As Integer = &H80000   ' 512 Ko toujours visibles
+    Private Const BANK_SIZE As Integer = &H80000    ' 512 Ko par banque commutable
+    Private Const FIRST_BANKED_PAGE As Integer = &H40
+
+    Private bank As Integer = 0
+
+    ''' <summary>Compteur de diagnostic (sans effet sur l'émulation).</summary>
+    Public Shared DbgBankSwitches As Long = 0
+
     Public Sub New(romPath As String)
         MyBase.New(romPath)
     End Sub
-    
+
     Public Overrides Function GetMapper() As String
         Return "SF2"
     End Function
-    
-    ''' <summary>Définit la banque ROM haute via registres $1FF0-$1FF3</summary>
-    Public Sub SetBankRegister(register As Integer, value As Integer)
-        Select Case register
-            Case &H1FF0, &H1FF1, &H1FF2, &H1FF3
-                ' Ces registres sélectionnent la banque haute
-                ' Implémentation simplifiée : on stocke juste la valeur
-                bankHigh = value And &H1F  ' 5 bits → 32 banques max
-        End Select
-    End Sub
-    
-    ''' <summary>Mappe la ROM avec prise en compte de la banque</summary>
-    Public Function GetMappedByte(logicalAddr As UShort) As Byte
-        ' Implémentation simplifiée : accès linéaire pour maintenant
-        If logicalAddr < RomData.Length Then
-            Return RomData(logicalAddr)
+
+    ''' <summary>Banque haute actuellement sélectionnée (0 à 3).</summary>
+    Public ReadOnly Property CurrentBank As Integer
+        Get
+            Return bank
+        End Get
+    End Property
+
+    Public Overrides Function ReadRom(page As Integer, offset As Integer) As Integer
+        Dim addr As Integer
+        If page < FIRST_BANKED_PAGE Then
+            addr = (page << 13) Or offset
+        Else
+            addr = FIXED_SIZE + bank * BANK_SIZE + (((page - FIRST_BANKED_PAGE) << 13) Or offset)
         End If
-        Return 0
+
+        If addr < RomData.Length Then Return RomData(addr)
+        Return &HFF
     End Function
+
+    Public Overrides Sub WriteRom(page As Integer, offset As Integer, value As Integer)
+        ' Seules les adresses $1FF0-$1FF3 pilotent le mapper
+        If (offset And &H1FFC) = &H1FF0 Then
+            Dim newBank = offset And 3
+            If newBank <> bank Then DbgBankSwitches += 1
+            bank = newBank
+        End If
+    End Sub
+
 End Class
 
-''' <summary>Utilitaire de création de cartridge depuis un fichier ROM</summary>
+''' <summary>Fabrique de cartouches : choisit le mapper d'après la taille utile de la ROM.</summary>
 Public Class CartridgeLoader
-    
-    ''' <summary>Charge une cartridge et retourne l'instance appropriée</summary>
+
     Public Shared Function LoadCartridge(romPath As String) As Cartridge
-        Dim fileInfo = New System.IO.FileInfo(romPath)
-        
-        ' Détection mapper par taille
-        Select Case fileInfo.Length
-            ' SF2' : 2.5 Mo
-            Case &H280000
-                Return New CartridgeSF2(romPath)
-            ' Par défaut : cartridge standard
-            Case Else
-                Return New CartridgeStandard(romPath)
-        End Select
+        Dim length = New System.IO.FileInfo(romPath).Length
+
+        ' Taille utile : l'éventuel en-tête de 512 octets ne compte pas
+        If (length Mod 8192) = 512 Then length -= 512
+
+        ' Street Fighter II' Champion Edition est la seule HuCard de 2,5 Mo
+        If length = &H280000 Then Return New CartridgeSF2(romPath)
+        Return New CartridgeStandard(romPath)
     End Function
-    
+
 End Class
