@@ -153,17 +153,21 @@ Public Class Psg
     ''' <summary>Génère les échantillons audio pour une frame (~735 à 60fps)</summary>
     Public Function GenerateSamples(cyclesThisFrame As Long) As Short()
         Dim numSamples = CInt(PceConstants.AUDIO_SAMPLE_RATE / PceConstants.FRAME_RATE)
-        Dim result(numSamples - 1) As Short
+        ' Sortie stéréo entrelacée : deux Short (gauche, droite) par échantillon.
+        Dim result(numSamples * 2 - 1) As Short
 
-        ' Gains par canal (volume log × balance canal × balance générale, mono)
+        ' Gains par canal, séparés gauche/droite (volume log × balance canal × balance générale).
+        ' L'ancien rendu mono valait exactement (gaucheL + droiteR) / 2 de ces deux gains.
         Dim mainL = BalTable((mainBalance >> 4) And &HF)
         Dim mainR = BalTable(mainBalance And &HF)
-        Dim chanGain(5) As Double
+        Dim chanGainL(5) As Double
+        Dim chanGainR(5) As Double
         For chIdx = 0 To 5
             Dim ch = channels(chIdx)
             Dim chL = BalTable((ch.Balance >> 4) And &HF)
             Dim chR = BalTable(ch.Balance And &HF)
-            chanGain(chIdx) = VolTable(ch.Volume) * (chL * mainL + chR * mainR) * 0.5 * 350.0
+            chanGainL(chIdx) = VolTable(ch.Volume) * chL * mainL * 350.0
+            chanGainR(chIdx) = VolTable(ch.Volume) * chR * mainR * 350.0
         Next
 
         ' LFO : le canal 1 cesse d'être audible et module la période du canal 0.
@@ -192,7 +196,8 @@ Public Class Psg
         Next
 
         For s = 0 To numSamples - 1
-            Dim mixed As Integer = 0
+            Dim mixedL As Integer = 0
+            Dim mixedR As Integer = 0
             Dim frameCycle As Long = CLng(cyclesThisFrame) * s \ numSamples
 
             ' Sortie courante du modulateur, centrée puis décalée selon la profondeur
@@ -211,7 +216,7 @@ Public Class Psg
                 ' Le canal 1 sert de modulateur : il ne produit aucun son
                 If lfoEnabled AndAlso chIdx = 1 Then Continue For
                 If Not ch.Enabled Then Continue For
-                If chanGain(chIdx) < 0.01 Then Continue For
+                If chanGainL(chIdx) < 0.01 AndAlso chanGainR(chIdx) < 0.01 Then Continue For
 
                 Dim sample As Integer
                 If ch.DdaMode Then
@@ -259,14 +264,18 @@ Public Class Psg
                     End If
                 End If
 
-                ' Gain logarithmique : ±16 × 700 = ±11200/canal (clamp si cumul)
-                mixed += CInt(sample * chanGain(chIdx))
+                ' Gain logarithmique appliqué séparément à chaque voie stéréo
+                mixedL += CInt(sample * chanGainL(chIdx))
+                mixedR += CInt(sample * chanGainR(chIdx))
             Next
 
-            ' Clamp
-            If mixed > 32767 Then mixed = 32767
-            If mixed < -32768 Then mixed = -32768
-            result(s) = CShort(mixed)
+            ' Clamp par voie
+            If mixedL > 32767 Then mixedL = 32767
+            If mixedL < -32768 Then mixedL = -32768
+            If mixedR > 32767 Then mixedR = 32767
+            If mixedR < -32768 Then mixedR = -32768
+            result(s * 2) = CShort(mixedL)
+            result(s * 2 + 1) = CShort(mixedR)
         Next
 
         ' Purger les événements DDA consommés

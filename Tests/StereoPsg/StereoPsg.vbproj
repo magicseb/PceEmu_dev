@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>PceEmu</RootNamespace>
+    <AssemblyName>StereoPsg</AssemblyName>
+    <StartupObject>PceEmu.StereoPsgTest</StartupObject>
+    <OptionStrict>Off</OptionStrict>
+    <OptionExplicit>On</OptionExplicit>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Le Core ne dépend pas de WinForms : il se compile ici tel quel -->
+    <Compile Include="../../Core/*.vb" />
+    <Compile Include="Program.vb" />
+  </ItemGroup>
+
+</Project>

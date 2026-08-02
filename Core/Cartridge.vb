@@ -30,6 +30,9 @@ Public MustInherit Class Cartridge
             RomMask <<= 1
         End While
         RomMask -= 1
+
+        ' Mapping « coupé » propre aux cartouches de 384 Ko (3 Mbit)
+        Is384 = (RomData.Length = &H60000)
     End Sub
 
     ''' <summary>Retient le contenu utile de la ROM, en-tête éventuel retiré.</summary>
@@ -43,9 +46,28 @@ Public MustInherit Class Cartridge
         End If
     End Sub
 
+    ''' <summary>Vrai pour une HuCard de 384 Ko (3 Mbit), au mapping « coupé » particulier.</summary>
+    Protected Is384 As Boolean
+
     ''' <summary>Lit un octet dans la zone ROM (pages $00-$7F).</summary>
     Public Overridable Function ReadRom(page As Integer, offset As Integer) As Integer
-        Dim addr = ((page << 13) Or offset) And RomMask
+        Dim addr As Integer
+
+        If Is384 Then
+            ' HuCard 3 Mbit : les sources se coupent en deux blocs distincts.
+            '  · pages $00-$3F → les 256 premiers Ko (2 Mbit), en miroir tous les 32 banques
+            '  · pages $40-$7F → les 128 derniers Ko (1 Mbit), en miroir tous les 16 banques
+            ' C'est par les banques $40+ que le jeu atteint son second bloc de code —
+            ' un simple miroir « puissance de deux » l'y renverrait au début de la ROM.
+            If (page And &H40) = 0 Then
+                addr = ((page And &H1F) << 13) Or offset
+            Else
+                addr = &H40000 + (((page And &HF) << 13) Or offset)
+            End If
+            Return RomData(addr)
+        End If
+
+        addr = ((page << 13) Or offset) And RomMask
         If addr < RomData.Length Then Return RomData(addr)
         Return &HFF
     End Function

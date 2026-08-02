@@ -9,6 +9,10 @@ Public Class MemoryMap
 
     ' Contrôle IRQ ($1402/$1403)
     Public IrqDisable As Integer = 0
+    ' Démasquage d'IRQ ($1402) : la reconnaissance est différée d'une instruction
+    ' (comportement 6502/HuC6280). Sans cela, l'idiome « ré-activer l'IRQ puis
+    ' l'acquitter » des handlers timer re-déclenche l'IRQ avant l'ack → ré-entrance.
+    Public IrqEnableDelay As Boolean = False
 
     ''' <summary>Vrai dès qu'un jeu a écrit en BRAM : évite de réécrire le fichier pour rien.</summary>
     Public BramModified As Boolean = False
@@ -185,7 +189,11 @@ Public Class MemoryMap
             Case 5
                 Select Case offset And 3
                     Case 2
+                        Dim oldDisable = IrqDisable
                         IrqDisable = value And 7
+                        ' Un bit de masquage passant de 1 à 0 = démasquage : diffère
+                        ' la reconnaissance de l'IRQ d'une instruction.
+                        If ((oldDisable And (Not IrqDisable)) And 7) <> 0 Then IrqEnableDelay = True
                     Case 3
                         ' Acquittement TIMER
                         If TimerRef IsNot Nothing Then TimerRef.AckIrq()

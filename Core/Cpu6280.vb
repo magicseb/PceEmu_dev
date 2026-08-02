@@ -52,6 +52,13 @@ Public Class Cpu6280
 
     ''' <summary>Vérifie les interruptions (appelé avant chaque instruction)</summary>
     Private Function CheckInterrupts() As Boolean
+        ' Délai d'un cran après un démasquage d'IRQ ($1402) : l'IRQ ré-autorisée
+        ' n'est reconnue qu'à l'instruction suivante, ce qui laisse l'instruction
+        ' d'acquittement s'exécuter (évite la ré-entrance des handlers timer).
+        If mpu.IrqEnableDelay Then
+            mpu.IrqEnableDelay = False
+            Return False
+        End If
         If (P And FLAG_I) <> 0 Then Return False
         Dim disable = mpu.IrqDisable
 

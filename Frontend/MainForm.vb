@@ -160,7 +160,7 @@ Public Class MainForm
             
             ' Initialiser l'audio
             If audioOut IsNot Nothing Then audioOut.Dispose()
-            audioOut = New AudioOut(CInt(PceConstants.AUDIO_SAMPLE_RATE), 1)
+            audioOut = New AudioOut(CInt(PceConstants.AUDIO_SAMPLE_RATE), 2)
             
             romLoaded = True
             isPaused = False
