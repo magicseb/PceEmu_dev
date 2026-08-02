@@ -16,6 +16,10 @@ Public Class Vdc
     ' Status
     Private statusReg As Integer = 0
     Public IrqLine As Boolean = False
+    ' VBlank différée d'une scanline lorsqu'un RCR coïncide avec la ligne de VBlank :
+    ' le CPU doit pouvoir acquitter le RCR avant que la VBlank ne soit assertée, sinon
+    ' les deux bits de status fusionnent et un handler « RCR ou VBlank » rate la VBlank.
+    Private vblankPending As Boolean = False
 
     ' Compteurs de diagnostic (sans effet sur l'émulation)
     Public Shared DbgCollisionCount As Long = 0
@@ -227,6 +231,19 @@ Public Class Vdc
 
     ''' <summary>Traite une scanline : IRQ RCR, rendu, VBlank</summary>
     Public Sub DoScanline(scanline As Integer)
+        ' VBlank différée depuis la scanline précédente (RCR coïncident) : on l'asserte
+        ' maintenant, le CPU ayant eu le temps d'acquitter le RCR entre-temps.
+        If vblankPending Then
+            vblankPending = False
+            statusReg = statusReg Or ST_VD
+            If (regs(R_CR) And &H8) <> 0 Then
+                AssertIrq()
+            End If
+            If satbPending Or satbAuto Then
+                DoSatbTransfer()
+            End If
+        End If
+
         ' Compteur de scroll vertical : latché à BYR en début de frame,
         ' incrémenté par ligne, relatché si le jeu écrit BYR (split raster)
         If scanline = 0 Then
@@ -240,24 +257,33 @@ Public Class Vdc
         End If
 
         ' IRQ Raster Compare : RCR compare (scanline affichée + 64)
+        Dim rcrFired = False
         If (regs(R_CR) And &H4) <> 0 Then
             If scanline + 64 = (regs(R_RCR) And &H3FF) Then
                 statusReg = statusReg Or ST_RR
                 AssertIrq()
+                rcrFired = True
             End If
         End If
 
         If scanline < DisplayHeight Then
             RenderLine(scanline)
         ElseIf scanline = DisplayHeight Then
-            ' Début VBlank
-            statusReg = statusReg Or ST_VD
-            If (regs(R_CR) And &H8) <> 0 Then
-                AssertIrq()
-            End If
-            ' SATB DMA
-            If satbPending Or satbAuto Then
-                DoSatbTransfer()
+            If rcrFired Then
+                ' RCR coïncide avec la ligne de VBlank : différer la VBlank d'une
+                ' scanline pour que le CPU serve/acquitte d'abord le RCR (le matériel
+                ' génère deux interruptions distinctes séparées par des cycles CPU).
+                vblankPending = True
+            Else
+                ' Début VBlank
+                statusReg = statusReg Or ST_VD
+                If (regs(R_CR) And &H8) <> 0 Then
+                    AssertIrq()
+                End If
+                ' SATB DMA
+                If satbPending Or satbAuto Then
+                    DoSatbTransfer()
+                End If
             End If
         End If
     End Sub
