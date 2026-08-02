@@ -288,4 +288,42 @@ Public Class Psg
         If samples IsNot Nothing Then audioBuffer.AddRange(samples)
     End Sub
 
+
+    ''' <summary>Écrit l'état du PSG dans une sauvegarde.</summary>
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(selectedChannel) : w.Write(mainBalance)
+        w.Write(lfoFreq) : w.Write(lfoControl)
+        For Each ch In channels
+            w.Write(ch.Freq) : w.Write(ch.Enabled) : w.Write(ch.DdaMode)
+            w.Write(ch.Volume) : w.Write(ch.Balance)
+            For i = 0 To ch.Waveform.Length - 1
+                w.Write(ch.Waveform(i))
+            Next
+            w.Write(ch.WaveWritePos) : w.Write(ch.Phase)
+            w.Write(ch.DdaSample) : w.Write(ch.DdaPreFrame)
+            w.Write(ch.NoiseEnabled) : w.Write(ch.NoiseFreq) : w.Write(ch.NoiseLfsr)
+        Next
+    End Sub
+
+    ''' <summary>
+    ''' Restaure l'état du PSG. Les événements DDA en attente ne sont pas sauvegardés :
+    ''' ils ne vivent que le temps d'une frame et sont reconstruits par le jeu.
+    ''' </summary>
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        selectedChannel = r.ReadInt32() : mainBalance = r.ReadInt32()
+        lfoFreq = r.ReadInt32() : lfoControl = r.ReadInt32()
+        For Each ch In channels
+            ch.Freq = r.ReadInt32() : ch.Enabled = r.ReadBoolean() : ch.DdaMode = r.ReadBoolean()
+            ch.Volume = r.ReadInt32() : ch.Balance = r.ReadInt32()
+            For i = 0 To ch.Waveform.Length - 1
+                ch.Waveform(i) = r.ReadInt32()
+            Next
+            ch.WaveWritePos = r.ReadInt32() : ch.Phase = r.ReadDouble()
+            ch.DdaSample = r.ReadInt32() : ch.DdaPreFrame = r.ReadInt32()
+            ch.NoiseEnabled = r.ReadBoolean() : ch.NoiseFreq = r.ReadInt32() : ch.NoiseLfsr = r.ReadInt32()
+            ch.DdaEvents.Clear()
+        Next
+        audioBuffer.Clear()
+    End Sub
+
 End Class

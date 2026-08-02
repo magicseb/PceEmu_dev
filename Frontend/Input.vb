@@ -23,8 +23,8 @@ Public Class InputManager
         keyState.Add("LShift", False)  ' Select
         keyState.Add("P", False)       ' Pause
         keyState.Add("R", False)       ' Reset
-        keyState.Add("S", False)       ' Save state
-        keyState.Add("L", False)       ' Load state
+        keyState.Add("F5", False)      ' Sauvegarder l'état
+        keyState.Add("F8", False)      ' Charger l'état
         
         For Each key In keyState.Keys.ToList()
             lastKeyState.Add(key, False)
@@ -54,10 +54,10 @@ Public Class InputManager
                 keyState("P") = True
             Case System.Windows.Forms.Keys.R
                 keyState("R") = True
-            Case System.Windows.Forms.Keys.S
-                keyState("S") = True
-            Case System.Windows.Forms.Keys.L
-                keyState("L") = True
+            Case System.Windows.Forms.Keys.F5
+                keyState("F5") = True
+            Case System.Windows.Forms.Keys.F8
+                keyState("F8") = True
         End Select
     End Sub
 
@@ -84,10 +84,10 @@ Public Class InputManager
                 keyState("P") = False
             Case System.Windows.Forms.Keys.R
                 keyState("R") = False
-            Case System.Windows.Forms.Keys.S
-                keyState("S") = False
-            Case System.Windows.Forms.Keys.L
-                keyState("L") = False
+            Case System.Windows.Forms.Keys.F5
+                keyState("F5") = False
+            Case System.Windows.Forms.Keys.F8
+                keyState("F8") = False
         End Select
     End Sub
 

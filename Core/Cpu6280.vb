@@ -664,4 +664,22 @@ Public Class Cpu6280
         Return 17 + 6 * len
     End Function
 
+
+    ''' <summary>Écrit l'état du CPU dans une sauvegarde.</summary>
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(A) : w.Write(X) : w.Write(Y) : w.Write(S) : w.Write(PC) : w.Write(P)
+        w.Write(CyclesThisFrame)
+        w.Write(Halted) : w.Write(FastMode)
+        w.Write(tFlagPending) : w.Write(tFlagActive)
+    End Sub
+
+    ''' <summary>Restaure l'état du CPU depuis une sauvegarde.</summary>
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        A = r.ReadInt32() : X = r.ReadInt32() : Y = r.ReadInt32()
+        S = r.ReadInt32() : PC = r.ReadInt32() : P = r.ReadInt32()
+        CyclesThisFrame = r.ReadInt64()
+        Halted = r.ReadBoolean() : FastMode = r.ReadBoolean()
+        tFlagPending = r.ReadBoolean() : tFlagActive = r.ReadBoolean()
+    End Sub
+
 End Class

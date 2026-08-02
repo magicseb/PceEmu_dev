@@ -45,6 +45,28 @@ Public MustInherit Class Cartridge
 
     Public MustOverride Function GetMapper() As String
 
+    ''' <summary>Écrit l'état du mapper : rien à retenir pour une cartouche ordinaire.</summary>
+    Public Overridable Sub SaveState(w As System.IO.BinaryWriter)
+    End Sub
+
+    ''' <summary>Restaure l'état du mapper.</summary>
+    Public Overridable Sub LoadState(r As System.IO.BinaryReader)
+    End Sub
+
+    ''' <summary>Empreinte de la ROM, pour refuser une sauvegarde faite avec un autre jeu.</summary>
+    Public Function Signature() As Integer
+        ' Accumulateur en 64 bits : le masquage seul ne suffirait pas à éviter
+        ' un débordement quand les vérifications arithmétiques sont actives
+        Dim sig As Long = RomData.Length
+        Dim stride = Math.Max(1, RomData.Length \ 4096)
+        Dim i = 0
+        While i < RomData.Length
+            sig = ((sig * 31) + RomData(i)) And &H7FFFFFFFL
+            i += stride
+        End While
+        Return CInt(sig)
+    End Function
+
 End Class
 
 ''' <summary>Cartouche standard : ROM linéaire avec miroirs.</summary>
@@ -107,6 +129,14 @@ Public Class CartridgeSF2
         If addr < RomData.Length Then Return RomData(addr)
         Return &HFF
     End Function
+
+    Public Overrides Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(bank)
+    End Sub
+
+    Public Overrides Sub LoadState(r As System.IO.BinaryReader)
+        bank = r.ReadInt32() And 3
+    End Sub
 
     Public Overrides Sub WriteRom(page As Integer, offset As Integer, value As Integer)
         ' Seules les adresses $1FF0-$1FF3 pilotent le mapper

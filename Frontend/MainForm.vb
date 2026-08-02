@@ -15,6 +15,13 @@ Public Class MainForm
     Private shouldStopEmulation As Boolean = False
     Private romLoaded As Boolean = False
     Private isPaused As Boolean = False
+
+    ' Protège le cœur d'émulation : les sauvegardes viennent du fil de l'interface,
+    ' l'exécution des frames du fil de fond
+    Private ReadOnly emulationLock As New Object()
+
+    Private currentRomPath As String = Nothing
+    Private currentSlot As Integer = 1
     
     Public Sub New()
         MyBase.New()
@@ -41,6 +48,18 @@ Public Class MainForm
         Dim emuMenu = New System.Windows.Forms.ToolStripMenuItem("&Emulation")
         emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Pause", Nothing, AddressOf MenuPause))
         emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Reset", Nothing, AddressOf MenuReset))
+        emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripSeparator())
+        emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Sauvegarder l'état" & vbTab & "F5", Nothing, AddressOf MenuSaveState))
+        emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("&Charger l'état" & vbTab & "F8", Nothing, AddressOf MenuLoadState))
+
+        Dim slotMenu = New System.Windows.Forms.ToolStripMenuItem("&Emplacement")
+        For slot = 1 To 5
+            Dim item = New System.Windows.Forms.ToolStripMenuItem("Emplacement " & slot, Nothing, AddressOf MenuSelectSlot)
+            item.Tag = slot
+            item.Checked = (slot = currentSlot)
+            slotMenu.DropDownItems.Add(item)
+        Next
+        emuMenu.DropDownItems.Add(slotMenu)
         emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripSeparator())
         emuMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("Enable &SuperGrafx", Nothing, AddressOf MenuToggleSuperGrafx))
         
@@ -95,7 +114,12 @@ Public Class MainForm
             StopEmulationTask()
             
             ' Charger le système
+            ' La BRAM du jeu précédent est enregistrée avant tout changement
+            FlushBram()
+
             pceSystem = New PceSystem(romPath, False)
+            currentRomPath = romPath
+            pceSystem.LoadBram(BramPath())
             
             ' Initialiser le rendu Direct3D 11
             If renderer IsNot Nothing Then renderer.Dispose()
@@ -134,7 +158,9 @@ Public Class MainForm
                 pceSystem.UpdateInput(inputManager.GetKeyState())
 
                 ' Une frame d'émulation
-                pceSystem.RunFrame()
+                SyncLock emulationLock
+                    pceSystem.RunFrame()
+                End SyncLock
 
                 ' Audio
                 Dim audioSamples = pceSystem.GetAudioSamples()
@@ -153,6 +179,8 @@ Public Class MainForm
             ' Touches de commande
             If inputManager.IsKeyPressed("P") Then isPaused = Not isPaused
             If inputManager.IsKeyPressed("R") AndAlso pceSystem IsNot Nothing Then pceSystem.Reset()
+            If inputManager.IsKeyPressed("F5") Then DoSaveState()
+            If inputManager.IsKeyPressed("F8") Then DoLoadState()
 
             ' Limiteur : accumulateur en ticks (pas de dérive), Sleep grossier + spin fin
             nextFrameTick += ticksPerFrame
@@ -227,6 +255,97 @@ Public Class MainForm
         Me.Close()
     End Sub
 
+    ' ===== Sauvegardes =====
+
+    ''' <summary>Dossier des sauvegardes, à côté de l'exécutable.</summary>
+    Private Function SaveFolder() As String
+        Return System.IO.Path.Combine(AppContext.BaseDirectory, "Sauvegardes")
+    End Function
+
+    ''' <summary>
+    ''' Fichier de la BRAM. Elle est unique, comme la pile de la console :
+    ''' tous les jeux se partagent les mêmes 2 Ko.
+    ''' </summary>
+    Private Function BramPath() As String
+        Return System.IO.Path.Combine(SaveFolder(), "bram.sav")
+    End Function
+
+    ''' <summary>Fichier d'un emplacement de sauvegarde, propre à la ROM chargée.</summary>
+    Private Function StatePath(slot As Integer) As String
+        Dim name = System.IO.Path.GetFileNameWithoutExtension(currentRomPath)
+        Return System.IO.Path.Combine(SaveFolder(), name & ".st" & slot)
+    End Function
+
+    ''' <summary>Écrit la BRAM sur disque si un jeu y a touché.</summary>
+    Private Sub FlushBram()
+        If pceSystem Is Nothing OrElse Not pceSystem.BramModified Then Return
+        Try
+            pceSystem.SaveBram(BramPath())
+        Catch ex As Exception
+            System.Diagnostics.Debug.WriteLine("BRAM non enregistrée : " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub DoSaveState()
+        If pceSystem Is Nothing Then Return
+        Try
+            SyncLock emulationLock
+                pceSystem.SaveState(StatePath(currentSlot))
+            End SyncLock
+            ShowStatus("État sauvegardé dans l'emplacement " & currentSlot)
+        Catch ex As Exception
+            ShowStatus("Échec de la sauvegarde : " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub DoLoadState()
+        If pceSystem Is Nothing Then Return
+        Dim path = StatePath(currentSlot)
+        If Not System.IO.File.Exists(path) Then
+            ShowStatus("Emplacement " & currentSlot & " vide")
+            Return
+        End If
+        Try
+            SyncLock emulationLock
+                pceSystem.LoadState(path)
+            End SyncLock
+            ShowStatus("État rechargé depuis l'emplacement " & currentSlot)
+        Catch ex As Exception
+            ShowStatus("Échec du chargement : " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>Affiche un message dans la barre d'état, depuis n'importe quel fil.</summary>
+    Private Sub ShowStatus(message As String)
+        Try
+            If statusLabel.InvokeRequired Then
+                statusLabel.BeginInvoke(Sub() statusLabel.Text = message)
+            Else
+                statusLabel.Text = message
+            End If
+        Catch
+        End Try
+    End Sub
+
+    Private Sub MenuSaveState(sender As Object, e As EventArgs)
+        DoSaveState()
+    End Sub
+
+    Private Sub MenuLoadState(sender As Object, e As EventArgs)
+        DoLoadState()
+    End Sub
+
+    Private Sub MenuSelectSlot(sender As Object, e As EventArgs)
+        Dim item = CType(sender, System.Windows.Forms.ToolStripMenuItem)
+        currentSlot = CInt(item.Tag)
+        For Each sibling As System.Windows.Forms.ToolStripItem In item.Owner.Items
+            If TypeOf sibling Is System.Windows.Forms.ToolStripMenuItem Then
+                CType(sibling, System.Windows.Forms.ToolStripMenuItem).Checked = (sibling Is item)
+            End If
+        Next
+        ShowStatus("Emplacement " & currentSlot & " sélectionné")
+    End Sub
+
     ''' <summary>Gestion des touches</summary>
     Protected Overrides Sub OnKeyDown(e As System.Windows.Forms.KeyEventArgs)
         inputManager.HandleKeyDown(e)
@@ -241,6 +360,7 @@ Public Class MainForm
     ''' <summary>Fermeture de l'app</summary>
     Protected Overrides Sub OnFormClosing(e As System.Windows.Forms.FormClosingEventArgs)
         StopEmulationTask()
+        FlushBram()
         If renderer IsNot Nothing Then renderer.Dispose()
         If audioOut IsNot Nothing Then audioOut.Dispose()
         MyBase.OnFormClosing(e)

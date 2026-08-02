@@ -433,4 +433,38 @@ Public Class Vdc
         Next
     End Sub
 
+
+    ''' <summary>Écrit l'état du VDC dans une sauvegarde.</summary>
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        For i = 0 To vram.Length - 1
+            w.Write(vram(i))
+        Next
+        For i = 0 To satb.Length - 1
+            w.Write(satb(i))
+        Next
+        For i = 0 To regs.Length - 1
+            w.Write(regs(i))
+        Next
+        w.Write(regSelect) : w.Write(writeLatch) : w.Write(readBuffer) : w.Write(statusReg)
+        w.Write(IrqLine) : w.Write(satbPending) : w.Write(satbAuto)
+        w.Write(bgYCounter) : w.Write(byrWritten)
+    End Sub
+
+    ''' <summary>Restaure l'état du VDC depuis une sauvegarde.</summary>
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        For i = 0 To vram.Length - 1
+            vram(i) = r.ReadInt32()
+        Next
+        For i = 0 To satb.Length - 1
+            satb(i) = r.ReadInt32()
+        Next
+        For i = 0 To regs.Length - 1
+            regs(i) = r.ReadInt32()
+        Next
+        regSelect = r.ReadInt32() : writeLatch = r.ReadInt32()
+        readBuffer = r.ReadInt32() : statusReg = r.ReadInt32()
+        IrqLine = r.ReadBoolean() : satbPending = r.ReadBoolean() : satbAuto = r.ReadBoolean()
+        bgYCounter = r.ReadInt32() : byrWritten = r.ReadBoolean()
+    End Sub
+
 End Class

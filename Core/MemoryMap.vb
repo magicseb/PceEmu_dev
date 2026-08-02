@@ -9,6 +9,9 @@ Public Class MemoryMap
     ' Contrôle IRQ ($1402/$1403)
     Public IrqDisable As Integer = 0
 
+    ''' <summary>Vrai dès qu'un jeu a écrit en BRAM : évite de réécrire le fichier pour rien.</summary>
+    Public BramModified As Boolean = False
+
     Private cartridge As Cartridge
     Private vce As Vce
     Private vdc As Vdc
@@ -68,7 +71,11 @@ Public Class MemoryMap
         ElseIf page >= &HF8 AndAlso page <= &HFB Then
             workRam(offset) = CByte(value)
         ElseIf page = &HF7 Then
-            bram(offset And &H7FF) = CByte(value)
+            Dim slot = offset And &H7FF
+            If bram(slot) <> CByte(value) Then
+                bram(slot) = CByte(value)
+                BramModified = True
+            End If
         ElseIf page < &H80 Then
             ' Sans effet, sauf sur une cartouche à mapper
             cartridge.WriteRom(page, offset, value)
@@ -136,5 +143,40 @@ Public Class MemoryMap
         If index >= 0 AndAlso index <= 7 Then Return mpr(index)
         Return 0
     End Function
+
+
+    ''' <summary>Copie de la BRAM, pour l'écrire sur disque.</summary>
+    Public Function GetBram() As Byte()
+        Return CType(bram.Clone(), Byte())
+    End Function
+
+    ''' <summary>Charge une BRAM lue sur disque (le surplus est ignoré).</summary>
+    Public Sub SetBram(data() As Byte)
+        If data Is Nothing Then Return
+        Dim n = Math.Min(data.Length, bram.Length)
+        Array.Copy(data, bram, n)
+        BramModified = False
+    End Sub
+
+    ''' <summary>Écrit l'état de la mémoire dans une sauvegarde.</summary>
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(workRam, 0, workRam.Length)
+        w.Write(bram, 0, bram.Length)
+        For i = 0 To 7
+            w.Write(mpr(i))
+        Next
+        w.Write(IrqDisable)
+    End Sub
+
+    ''' <summary>Restaure l'état de la mémoire depuis une sauvegarde.</summary>
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        Array.Copy(r.ReadBytes(workRam.Length), workRam, workRam.Length)
+        Array.Copy(r.ReadBytes(bram.Length), bram, bram.Length)
+        For i = 0 To 7
+            mpr(i) = r.ReadInt32()
+        Next
+        IrqDisable = r.ReadInt32()
+        BramModified = True
+    End Sub
 
 End Class

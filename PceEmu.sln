@@ -1,8 +1,9 @@
+
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 18
-VisualStudioVersion = 18.4.11605.240 stable
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31919.166
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{F184B08F-C81C-45F6-A57F-5ABD9991F28F}") = "PceEmu", "PceEmu.vbproj", "{83646E9C-1BC6-43CD-8BD2-F6210D7D1F06}"
+Project("{778DAE3C-4631-46EA-AA49-85D183D3D3C9}") = "PceEmu", "PceEmu.vbproj", "{A1B2C3D4-E5F6-47G8-9H0I-1J2K3L4M5N6O}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -10,12 +11,9 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{83646E9C-1BC6-43CD-8BD2-F6210D7D1F06}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{83646E9C-1BC6-43CD-8BD2-F6210D7D1F06}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{83646E9C-1BC6-43CD-8BD2-F6210D7D1F06}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{83646E9C-1BC6-43CD-8BD2-F6210D7D1F06}.Release|Any CPU.Build.0 = Release|Any CPU
-	EndGlobalSection
-	GlobalSection(SolutionProperties) = preSolution
-		HideSolutionNode = FALSE
+		{A1B2C3D4-E5F6-47G8-9H0I-1J2K3L4M5N6O}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-E5F6-47G8-9H0I-1J2K3L4M5N6O}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-E5F6-47G8-9H0I-1J2K3L4M5N6O}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-E5F6-47G8-9H0I-1J2K3L4M5N6O}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

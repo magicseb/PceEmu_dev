@@ -67,4 +67,22 @@ Public Class Vce
         Return argbCache(index And &H1FF)
     End Function
 
+
+    ''' <summary>Écrit l'état du VCE dans une sauvegarde.</summary>
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        For i = 0 To palette.Length - 1
+            w.Write(palette(i))
+        Next
+        w.Write(ctaAddress) : w.Write(controlReg)
+    End Sub
+
+    ''' <summary>Restaure l'état du VCE ; le cache ARGB est recalculé.</summary>
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        For i = 0 To palette.Length - 1
+            palette(i) = r.ReadInt32()
+            UpdateCache(i)
+        Next
+        ctaAddress = r.ReadInt32() : controlReg = r.ReadInt32()
+    End Sub
+
 End Class

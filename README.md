@@ -20,7 +20,6 @@
 
 - ❌ SuperGrafx (VDC2/VPC) : retiré temporairement, à réintégrer
 - ❌ CD-ROM² / Arcade Card
-- ❌ Sauvegarde d'état
 - ❌ Sortie audio mono (pas de stéréo balancée)
 - ❌ Timing VDC par scanline (pas mid-scanline)
 
@@ -105,7 +104,8 @@ PceEmu/
 ├── Tests/                    # Bancs d'essai (projets séparés, hors PceEmu.sln)
 │   ├── CollisionSprite0/     # Vérifie la collision du sprite 0 via les registres VDC
 │   ├── LfoPsg/               # Vérifie le LFO du PSG contre des références calculées
-│   └── MapperSf2/            # Vérifie le mapper SF2 avec une ROM factice à motif connu
+│   ├── MapperSf2/            # Vérifie le mapper SF2 avec une ROM factice à motif connu
+│   └── SaveState/            # Vérifie le déterminisme des sauvegardes et la BRAM
 ├── Program.vb                # Point d'entrée (+ mode --test-console)
 ├── PceEmu.vbproj             # Projet (.NET 8, RemoveIntegerChecks, NAudio)
 └── PceEmu.sln
@@ -140,6 +140,8 @@ C'est la seule dépendance : SharpDX a été abandonné au profit de GDI+.
 - Collision du sprite 0 évaluée sur les pixels opaques, quel que soit l'ordre d'affichage
 - Volumes PSG logarithmiques (1,5 dB par pas) — indispensable pour l'équilibre musical
 - DDA : chaque écriture est horodatée au cycle CPU et rejouée sur la timeline de la frame (sans cela, voix et coups sont inaudibles)
+- BRAM : une console neuve présente l'en-tête de formatage « HUBM » ; sans lui les jeux considèrent la mémoire vierge et refusent d'y écrire
+- Sauvegarde d'état : l'empreinte de la ROM est stockée dans le fichier, ce qui interdit de charger l'état d'un autre jeu ; le verrou d'écriture de la BRAM ($1803) n'est pas émulé
 - Mapper SF2 : c'est l'adresse écrite qui sélectionne la banque ($1FF0 à $1FF3), la valeur écrite est ignorée ; le mapping est porté par la cartouche, pas par la MMU
 - LFO : le canal 1 cesse d'être audible et sa sortie signée s'ajoute à la période du canal 0 ; sa propre période vaut celle du canal 1 multipliée par $0808 ; le bit 7 de $0809 fige le modulateur sans rendre le canal 1 audible
 

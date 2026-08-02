@@ -110,17 +110,25 @@ L'écran noir initial venait de `CreateGraphics()` : le dessin est effacé au pr
 | Collision sprite 0 absente | Jeux la testant en boucle | Masque du sprite 0 par scanline |
 | LFO PSG ignoré | Vibratos et sirènes absents | Canal 1 en modulateur de période |
 | Mapper SF2 factice | SF2' illisible au-delà de 1 Mo | Banques portées par la cartouche |
+| Signature ROM débordait | Sauvegarde impossible hors Release | Accumulateur en 64 bits |
+
+## 💾 Sauvegarde d'état et BRAM
+
+**Sauvegarde d'état.** Chaque composant sérialise ses propres champs privés (`SaveState`/`LoadState` sur CPU, VDC, VCE, PSG, Timer, manette, MMU et cartouche), `PceSystem` orchestre. Le fichier est compressé en gzip et s'ouvre sur la signature `PCEST`, un numéro de format et une empreinte de la ROM : charger l'état d'un autre jeu est refusé plutôt que de produire un plantage inexplicable. Les événements DDA en attente ne sont pas sauvegardés — ils ne vivent que le temps d'une frame et le jeu les reconstruit.
+
+**BRAM.** Les 2 Ko sont relus au chargement d'une ROM et réécrits quand un jeu y a touché (`BramModified` évite les écritures inutiles). Le fichier est **unique et partagé par tous les jeux**, comme la pile de la vraie console. Une BRAM neuve est initialisée avec l'en-tête de formatage `HUBM` : sans lui, les jeux la voient comme vierge et refusent d'y écrire.
 
 ## 🗺️ Feuille de route
 
 1. **SuperGrafx** : réintégrer Vpc.vb (VDC2 + mixage fenêtres/priorités)
 2. **Stéréo** : exploiter les balances L/R déjà décodées (sortie actuellement mono)
-5. Sauvegarde d'état, BRAM persistante
+5. Verrou d'écriture de la BRAM ($1803), multitap, CD-ROM²
 
 ## 🔧 Outils de diagnostic intégrés
 
 - `Tests/CollisionSprite0` : banc d'essai pilotant le VDC par ses registres, sans ROM (8 cas sur la collision sprite 0)
 - `Tests/LfoPsg` : banc d'essai du LFO, comparaison échantillon par échantillon avec des références calculées (9 cas, dont un garde-fou contre les tests insensibles)
 - `Tests/MapperSf2` : banc d'essai du mapper, ROM factice dont chaque page porte son numéro (20 cas : banques, zone fixe, miroirs, écritures neutres)
+- `Tests/SaveState` : banc d'essai des sauvegardes, ROM assemblée à la main dont l'état évolue à chaque frame (13 cas, dont un garde-fou et le rejet des fichiers étrangers)
 - Mode `--test-console <rom>` dans `Program.vb` (compte les pixels sans UI)
 - Compteurs de debug dans `Psg`/`CpuTimer` (`DbgWriteCount`, `DbgDdaWrites`…) et `PceSystem.DbgPsgState()` — inoffensifs en production, précieux pour diagnostiquer une ROM récalcitrante

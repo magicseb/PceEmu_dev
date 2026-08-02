@@ -54,4 +54,17 @@ Public Class CpuTimer
         IrqPending = False
     End Sub
 
+
+    ''' <summary>Écrit l'état du timer dans une sauvegarde.</summary>
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(reload) : w.Write(counter) : w.Write(prescaler)
+        w.Write(enabled) : w.Write(IrqPending)
+    End Sub
+
+    ''' <summary>Restaure l'état du timer depuis une sauvegarde.</summary>
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        reload = r.ReadInt32() : counter = r.ReadInt32() : prescaler = r.ReadInt32()
+        enabled = r.ReadBoolean() : IrqPending = r.ReadBoolean()
+    End Sub
+
 End Class

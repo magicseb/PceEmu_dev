@@ -52,4 +52,15 @@ Public Class Joypad
         If keys.ContainsKey("Enter") Then BtnRun = keys("Enter")
     End Sub
 
+
+    ''' <summary>Écrit l'état de la manette dans une sauvegarde.</summary>
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(sel) : w.Write(clr)
+    End Sub
+
+    ''' <summary>Restaure l'état de la manette ; les boutons sont réactualisés à la frame suivante.</summary>
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        sel = r.ReadBoolean() : clr = r.ReadBoolean()
+    End Sub
+
 End Class

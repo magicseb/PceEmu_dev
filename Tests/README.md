@@ -47,3 +47,18 @@ dotnet run -c Release
 Le test fabrique une ROM factice de 2,5 Mo dont chaque page de 8 Ko commence par son propre numéro. Lire une page revient donc à demander à la cartouche quelle portion de ROM elle a placée là, et la réponse se vérifie exactement — sans dépendre d'un jeu réel.
 
 Vingt cas sont couverts : détection de la cartouche par sa taille, les quatre banques sur les pages $40-$7F, l'immobilité de la zone fixe $00-$3F, le fait que seule l'adresse écrite compte (et non la valeur), l'absence d'effet des écritures hors fenêtre du mapper, et le comportement d'une cartouche ordinaire, miroirs compris.
+
+## SaveState
+
+Banc d'essai des sauvegardes d'état et de la BRAM :
+
+```bash
+cd Tests\SaveState
+dotnet run -c Release
+```
+
+Le test vérifie la seule propriété qui compte vraiment : **une console vierge, rechargée depuis une sauvegarde, doit produire exactement le même avenir que la console d'origine**. Si un champ manque à l'appel — un registre d'adresse VRAM, la palette, un compteur interne — les deux futurs divergent et le test échoue.
+
+Pour cela il utilise une ROM de 8 Ko assemblée à la main, dont le programme incrémente un compteur en page zéro et le déverse en VRAM et dans la palette : chaque frame modifie donc la RAM, la VRAM, la palette et les registres d'adresse du VDC et du VCE.
+
+Treize cas sont couverts, dont un garde-fou vérifiant que l'image évolue bien entre les deux points de comparaison, le rejet d'une sauvegarde faite avec un autre jeu, le rejet d'un fichier étranger, l'en-tête de formatage d'une BRAM neuve et la détection des écritures en BRAM.
