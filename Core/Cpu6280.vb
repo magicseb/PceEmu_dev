@@ -62,6 +62,12 @@ Public Class Cpu6280
         If (P And FLAG_I) <> 0 Then Return False
         Dim disable = mpu.IrqDisable
 
+        ' IRQ2 - CD-ROM² (vecteur $FFF6, priorité la plus haute)
+        If mpu.Irq2Line AndAlso (disable And &H1) = 0 Then
+            DoInterrupt(&HFFF6)
+            Return True
+        End If
+
         ' TIMER (vecteur $FFFA)
         If mpu.TimerRef IsNot Nothing AndAlso mpu.TimerRef.IrqPending AndAlso (disable And &H4) = 0 Then
             DoInterrupt(&HFFFA)

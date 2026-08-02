@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>PceEmu</RootNamespace>
+    <AssemblyName>CdRomTests</AssemblyName>
+    <StartupObject>PceEmu.CdRomTest</StartupObject>
+    <OptionStrict>Off</OptionStrict>
+    <OptionExplicit>On</OptionExplicit>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Core/CdImage.vb" />
+    <Compile Include="../../Core/CdRom.vb" />
+    <Compile Include="Program.vb" />
+  </ItemGroup>
+</Project>

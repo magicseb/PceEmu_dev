@@ -120,8 +120,9 @@ Public Class MainForm
     ''' <summary>Ouvre une ROM</summary>
     Private Sub MenuOpenROM(sender As Object, e As EventArgs)
         Dim openFileDialog = New System.Windows.Forms.OpenFileDialog()
-        openFileDialog.Filter = "Jeux PC Engine (*.pce;*.sgx;*.zip;*.7z)|*.pce;*.sgx;*.zip;*.7z|" &
-                                "ROMs (*.pce;*.sgx)|*.pce;*.sgx|" &
+        openFileDialog.Filter = "Jeux PC Engine (*.pce;*.sgx;*.zip;*.7z;*.cue;*.ccd)|*.pce;*.sgx;*.zip;*.7z;*.cue;*.ccd|" &
+                                "ROMs HuCard (*.pce;*.sgx)|*.pce;*.sgx|" &
+                                "Jeux CD-ROM² (*.cue;*.ccd)|*.cue;*.ccd|" &
                                 "Archives (*.zip;*.7z)|*.zip;*.7z|" &
                                 "Tous les fichiers (*.*)|*.*"
         openFileDialog.Title = "Ouvrir une ROM PC Engine"
@@ -130,6 +131,36 @@ Public Class MainForm
             LoadROM(openFileDialog.FileName)
         End If
     End Sub
+
+    ''' <summary>Vrai si le chemin désigne une image CD-ROM² (.cue/.ccd/.img).</summary>
+    Private Shared Function IsCdImage(path As String) As Boolean
+        Dim ext = System.IO.Path.GetExtension(path).ToLowerInvariant()
+        Return ext = ".cue" OrElse ext = ".ccd" OrElse ext = ".img"
+    End Function
+
+    ''' <summary>
+    ''' Retourne le chemin de la System Card (BIOS CD-ROM²) : celui mémorisé s'il est
+    ''' valide, sinon demande à l'utilisateur de le localiser et le mémorise.
+    ''' Retourne Nothing si l'utilisateur annule.
+    ''' </summary>
+    Private Function ResolveSystemCard() As String
+        Dim saved = config.SystemCardPath
+        If Not String.IsNullOrEmpty(saved) AndAlso System.IO.File.Exists(saved) Then Return saved
+
+        System.Windows.Forms.MessageBox.Show(
+            "Les jeux CD-ROM² nécessitent le fichier de la System Card (BIOS), par ex. syscard3.pce." & Environment.NewLine &
+            "Sélectionnez-le : il sera mémorisé pour les prochains lancements.",
+            "System Card requise")
+        Dim dlg = New System.Windows.Forms.OpenFileDialog()
+        dlg.Filter = "System Card (*.pce)|*.pce|Tous les fichiers (*.*)|*.*"
+        dlg.Title = "Localiser la System Card (BIOS CD-ROM²)"
+        If dlg.ShowDialog() = System.Windows.Forms.DialogResult.OK Then
+            config.SystemCardPath = dlg.FileName
+            config.Save()
+            Return dlg.FileName
+        End If
+        Return Nothing
+    End Function
 
     ''' <summary>Charge et démarre une ROM</summary>
     Private Sub LoadROM(romPath As String, Optional forceMode As Boolean = False)
@@ -149,8 +180,22 @@ Public Class MainForm
 
 
             ' L'archive éventuelle est décompressée en mémoire, rien n'atterrit sur le disque
-            Dim rom = RomArchive.Load(romPath)
-            pceSystem = New PceSystem(rom.Title, rom.Data, superGrafxMode)
+            If IsCdImage(romPath) Then
+                ' Jeu CD-ROM² : il faut la System Card (BIOS) + l'image CD
+                Dim scPath = ResolveSystemCard()
+                If scPath Is Nothing Then
+                    statusLabel.Text = "Chargement CD annulé (System Card requise)."
+                    Return
+                End If
+                superGrafxMode = False
+                superGrafxMenuItem.Checked = False
+                Dim sc = RomArchive.Load(scPath)
+                pceSystem = New PceSystem(sc.Title, sc.Data, False)
+                pceSystem.InsertCd(New CdImage(romPath))
+            Else
+                Dim rom = RomArchive.Load(romPath)
+                pceSystem = New PceSystem(rom.Title, rom.Data, superGrafxMode)
+            End If
             currentRomPath = romPath
             pceSystem.LoadBram(BramPath())
             

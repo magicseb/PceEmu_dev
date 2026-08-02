@@ -14,6 +14,7 @@ Public Class PceSystem
     Private vpc As Vpc = Nothing
 
     Private cartridge As Cartridge
+    Private cd As CdRom = Nothing
     Private framebuffer(PceConstants.SCREEN_WIDTH * PceConstants.SCREEN_HEIGHT - 1) As Integer
 
     Private _frameCount As Integer = 0
@@ -28,6 +29,12 @@ Public Class PceSystem
     ''' en-tête ; sans lui, ils la considèrent vierge et refusent d'y écrire.
     ''' </summary>
     Private Shared ReadOnly EMPTY_BRAM_HEADER As Byte() = {&H48, &H55, &H42, &H4D, &H0, &H88, &H10, &H80}
+
+    ''' <summary>Insère une image CD-ROM² : crée le lecteur et le câble à la MMU (RAM CD comprise).</summary>
+    Public Sub InsertCd(cdImage As CdImage)
+        cd = New CdRom(cdImage)
+        mpu.ConnectCd(cd)
+    End Sub
 
     Public Sub New(romPath As String, enableSuperGrafx As Boolean)
         Me.New(CartridgeLoader.LoadCartridge(romPath), enableSuperGrafx)

@@ -106,6 +106,16 @@ Public Class Settings
         End Set
     End Property
 
+    ''' <summary>Chemin de la System Card (BIOS CD-ROM²), mémorisé pour lancer les jeux CD.</summary>
+    Public Property SystemCardPath As String
+        Get
+            Return GetValue("SystemCard", "")
+        End Get
+        Set(value As String)
+            values("SystemCard") = If(value, "")
+        End Set
+    End Property
+
     Private Function GetValue(key As String, fallback As String) As String
         Dim result As String = Nothing
         If values.TryGetValue(key, result) Then Return result

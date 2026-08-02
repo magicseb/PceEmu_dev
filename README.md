@@ -18,7 +18,8 @@
 
 ## Limitations actuelles
 
-- ❌ CD-ROM² / Arcade Card
+- ⚠️ CD-ROM² : les jeux bootent et s'exécutent, mais l'audio (ADPCM et CD-DA) et l'auto-boot sans RUN restent à faire
+- ❌ Arcade Card
 - ❌ Timing VDC par scanline (pas mid-scanline)
 
 ## Prérequis
@@ -115,7 +116,8 @@ PceEmu/
 │   ├── RomArchive/           # Vérifie l'ouverture des ROMs nues, ZIP et 7z
 │   ├── StereoPsg/            # Vérifie le panoramique stéréo (balance canal + générale)
 │   ├── TimerIrqAck/          # Vérifie l'idiome ré-activer→acquitter de l'IRQ timer
-│   └── VblankRcrSplit/       # Vérifie la coïncidence RCR / VBlank sur une scanline
+│   ├── VblankRcrSplit/       # Vérifie la coïncidence RCR / VBlank sur une scanline
+│   └── CdRom/                # Vérifie l'interface SCSI CD-ROM² (handshake, lecture secteurs)
 ├── Program.vb                # Point d'entrée (+ mode --test-console)
 ├── PceEmu.vbproj             # Projet (.NET 8, RemoveIntegerChecks, NAudio)
 └── PceEmu.sln
@@ -143,6 +145,7 @@ SharpDX a été abandonné au profit de GDI+ pour le rendu.
 9. ✅ **Stéréo PSG** — balance de canal et balance générale appliquées voie par voie (banc StereoPsg : 10/10, dont un cas garde-fou)
 10. ✅ **Acquittement IRQ timer** — After Burner II (Japan) (En) ne gèle plus : délai d'un cran après démasquage d'IRQ ($1402) pour que l'ack ($1403) s'exécute avant la reprise (banc TimerIrqAck : 3/3)
 11. ✅ **Coïncidence RCR / VBlank** — Air Zonk (USA) ne gèle plus en niveau 1 : quand un split raster tombe sur la ligne de VBlank, la VBlank est différée d'une scanline pour être servie séparément (banc VblankRcrSplit : 5/5)
+12. ✅ **CD-ROM² (Super System Card)** — les jeux CD bootent et s'exécutent : interface SCSI $1800-$180F (handshake REQ/ACK), lecture de l'image CD (.cue/.ccd/.img), 256 Ko de RAM CD, IRQ2. La System Card charge le programme depuis le disque et le lance (banc CdRom : 11/11)
 
 ## Notes techniques
 
@@ -150,6 +153,7 @@ SharpDX a été abandonné au profit de GDI+ pour le rendu.
 - Vecteurs d'interruption HuC6280 (différents du 6502 : RESET en $FFFE)
 - Démasquage d'IRQ ($1402) différé d'une instruction : l'idiome « ré-activer puis acquitter » ($1402 puis $1403) des handlers timer ne se ré-entre pas en boucle
 - RCR (comparaison raster) et VBlank sur la même scanline : la VBlank est différée d'une ligne pour rester une interruption distincte (comme le matériel, où le split milieu-de-ligne et la VBlank fin-de-ligne sont espacés)
+- CD-ROM² : interface SCSI ($1800-$180F). Le lecteur pose REQ (bit6 de $1800) quand un octet est prêt ; l'initiateur asserte ACK ($1802 bit7), ce qui fait retomber REQ, puis le relâche (REQ remonte). Machine à phases commande→données→status→message. RAM CD de 256 Ko en banques $68-$87. Interruption du lecteur sur IRQ2 (vecteur $FFF6). La System Card (256 Ko + en-tête de 512 o) se charge comme une HuCard
 - MPR7 = 0 au reset ; zéro page logique en $2000, pile en $2100
 - VRAM adressée en words 16 bits, écriture VWR = latch LSB puis MSB
 - Auto-incrément d'adresse VRAM selon CR bits 11-12 (1/32/64/128)
@@ -197,6 +201,7 @@ Les réglages (touches, dossier des jeux, manette) sont conservés dans `PceEmu.
 
 Le numéro de version monte de 0,1 à chaque correction complète appliquée.
 
+- **1.9** — support CD-ROM² / Super System Card : boot et exécution des jeux CD depuis une image .cue/.ccd/.img. Interface SCSI ($1800-$180F) avec handshake REQ/ACK, RAM CD de 256 Ko (banques $68-$87), IRQ2. La System Card lit la TOC, charge le programme du jeu et l'exécute (banc garde-fou CdRom). Ouvrir un .cue/.ccd demande la System Card (mémorisée ensuite). RESTE : audio ADPCM et CD-DA, auto-boot sans RUN, Arcade Card
 - **1.8** — correction du gel d'Air Zonk : lorsqu'un split raster (RCR) coïncide avec la ligne de VBlank, la VBlank est différée d'une scanline afin d'être délivrée comme une interruption distincte (les handlers « RCR ou VBlank » ne ratent plus la VBlank ; banc garde-fou VblankRcrSplit)
 - **1.7** — correction du gel d'After Burner II : délai d'un cran de reconnaissance d'IRQ après un démasquage via $1402, pour que l'idiome « ré-activer puis acquitter » du handler timer ne provoque plus de ré-entrance en boucle (banc garde-fou TimerIrqAck)
 - **1.6** — sortie audio stéréo : la balance de canal ($0805) et la balance générale ($0801) sont appliquées séparément à chaque voie (banc garde-fou StereoPsg)
@@ -209,6 +214,6 @@ Projet d'apprentissage. Libre de modification pour usage personnel.
 
 ---
 
-**Version** : 1.8 (août 2026) — correction du gel d'Air Zonk (coïncidence RCR / VBlank)  
+**Version** : 1.9 (août 2026) — support CD-ROM² : boot et exécution des jeux CD  
 **Langage** : VB.NET (.NET 8)  
 **Plateforme** : Windows (WinForms + GDI+)
