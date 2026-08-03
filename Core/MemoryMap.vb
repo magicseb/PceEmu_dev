@@ -33,7 +33,6 @@ Public Class MemoryMap
     Private cdRam() As Byte = Nothing
 
     ''' <summary>Compteur de diagnostic (sans effet sur l'émulation).</summary>
-    Public Shared DbgVdc2Writes As Long = 0
 
     ''' <summary>Vrai quand le second VDC et le VPC sont câblés.</summary>
     Public ReadOnly Property SuperGrafx As Boolean
@@ -192,6 +191,20 @@ Public Class MemoryMap
                 End Select
             Case 6  ' $1800-$1BFF : interface CD-ROM² ($1800-$18FF)
                 If cd IsNot Nothing AndAlso (offset And &HF00) = &H800 Then
+                    ' Registres d'identification de la RAM étendue de la Super System Card,
+                    ' lus par le BIOS ex_memopen ($FE92) : signature $AA/$55 en $18C1/$18C2 puis
+                    ' un octet de config en $18C3 dont (val And $7F) doit valoir >= 3 (nombre
+                    ' d'unités de 64 Ko de RAM étendue : $68-$7F = 192 Ko = 3). Sans ces
+                    ' registres, ex_memopen échoue et les jeux Super CD affichent
+                    ' « This disc only works on the SUPER CD-ROM² SYSTEM ».
+                    If cdRam IsNot Nothing AndAlso offset >= &H18C0 AndAlso offset <= &H18C7 Then
+                        Select Case offset
+                            Case &H18C1 : Return &HAA
+                            Case &H18C2 : Return &H55
+                            Case &H18C3 : Return &H3
+                            Case Else : Return 0
+                        End Select
+                    End If
                     Return cd.Read(offset And &HF)
                 End If
                 Return &HFF
@@ -256,9 +269,7 @@ Public Class MemoryMap
         Select Case (offset And &H1F) >> 3
             Case 0 : vdc.Write(offset And 3, value)
             Case 1 : vpc.Write(offset And 7, value)
-            Case 2
-                DbgVdc2Writes += 1
-                vdc2.Write(offset And 3, value)
+            Case 2 : vdc2.Write(offset And 3, value)
         End Select
     End Sub
 

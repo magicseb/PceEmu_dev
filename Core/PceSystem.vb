@@ -158,7 +158,18 @@ Public Class PceSystem
 
     ''' <summary>Retourne les échantillons audio de la frame</summary>
     Public Function GetAudioSamples() As Short()
-        Return psg.GetAudioBuffer()
+        Dim buf = psg.GetAudioBuffer()
+        If cd IsNot Nothing Then
+            Dim cdbuf(buf.Length - 1) As Short
+            cd.RenderAudio(cdbuf, buf.Length)
+            For i = 0 To buf.Length - 1
+                Dim m = CInt(buf(i)) + CInt(cdbuf(i))
+                If m > 32767 Then m = 32767
+                If m < -32768 Then m = -32768
+                buf(i) = CShort(m)
+            Next
+        End If
+        Return buf
     End Function
 
     ''' <summary>Met à jour l'état des touches</summary>

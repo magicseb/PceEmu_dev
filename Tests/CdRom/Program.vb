@@ -54,6 +54,19 @@ Public Module CdRomTest
         Dim ft = cd.Read(8) : Dim lt = cd.Read(8)
         Check("GET DIR INFO : piste 1 à 1 (BCD 01/01)", ft = &H1 AndAlso lt = &H1)
 
+        ' 6) Acquittement du status d'IRQ : après qu'une commande se termine (bus libre),
+        ' le bit « transfert terminé » ($20) est posé dans $1803, et sa LECTURE l'efface
+        ' (sans quoi l'IRQ2 CD tempête : le handler du BIOS re-déclenche sans fin).
+        SendCommand(cd, New Integer() {&H0, 0, 0, 0, 0, 0})   ' TEST UNIT READY
+        cd.Read(1)                                            ' lit le status -> phase status
+        cd.Write(2, &H80) : cd.Write(2, &H0)                  ' ACK -> phase message
+        cd.Read(1)                                            ' lit le message
+        cd.Write(2, &H80) : cd.Write(2, &H0)                  ' ACK -> bus libre (pose $20)
+        Dim irq1 = cd.Read(3)
+        Dim irq2 = cd.Read(3)
+        Check("IRQ status : transfert terminé signalé ($20)", (irq1 And &H20) <> 0)
+        Check("IRQ status : la lecture de $1803 l'acquitte", (irq2 And &H20) = 0)
+
         Console.WriteLine()
         Console.WriteLine(passed & " réussis, " & failed & " échoués")
         Return If(failed = 0, 0, 1)

@@ -1,29 +1,40 @@
 ''' <summary>
-''' Lecteur d'image CD pour le CD-ROM² : parse un .cue (ou .ccd/.img CloneCD) et
-''' expose les secteurs et la table des matières (TOC).
+''' Lecteur d'image CD pour le CD-ROM². Gère :
+'''  - une image mono-fichier (.cue/.ccd + un seul .img/.bin), et
+'''  - un .cue MULTI-FICHIERS (un .bin par piste, data + pistes audio CD-DA).
 '''
-''' Ne gère pour l'instant que les pistes MODE1/2352 (données) — suffisant pour les
-''' jeux CD-ROM² sans piste audio ; les pistes AUDIO sont reconnues dans la TOC.
+''' Les secteurs sont lus À LA DEMANDE via des flux (les pistes audio peuvent peser
+''' des centaines de Mo — on ne charge rien en mémoire d'un coup). Les LBA sont
+''' cumulés sur l'ensemble des fichiers, pregaps (INDEX 00/01) compris.
 ''' </summary>
 Public Class CdImage
 
-    Private ReadOnly img As Byte()
-    Private ReadOnly sectorSize As Integer
-    Private ReadOnly userOffset As Integer          ' décalage des données utilisateur dans le secteur brut
+    Private Structure Entry
+        Public FilePath As String
+        Public SectorSize As Integer
+        Public UserOffset As Integer     ' décalage des données utilisateur dans le secteur brut
+        Public IsAudio As Boolean
+        Public Number As Integer
+        Public FileStartLba As Integer   ' LBA absolu du secteur 0 du FICHIER (base pour l'offset)
+        Public FileSectors As Integer
+        Public TrackStartLba As Integer  ' LBA absolu de l'INDEX 01 (début « officiel » de la piste)
+        Public RangeStart As Integer     ' plage LBA couverte par cette piste (pour la recherche)
+        Public RangeEnd As Integer
+    End Structure
+
+    Private ReadOnly entries As New System.Collections.Generic.List(Of Entry)
+    Private ReadOnly streams As New System.Collections.Generic.Dictionary(Of String, System.IO.FileStream)
 
     Public ReadOnly Property TotalSectors As Integer
     Public ReadOnly Property FirstTrack As Integer
     Public ReadOnly Property LastTrack As Integer
 
-    ''' <summary>Piste : LBA de départ, drapeau audio.</summary>
     Public Structure TrackInfo
         Public Number As Integer
         Public StartLba As Integer
         Public IsAudio As Boolean
     End Structure
-    Private ReadOnly tracks As New System.Collections.Generic.List(Of TrackInfo)
 
-    ''' <summary>LBA du lead-out (= nombre total de secteurs de la zone programme).</summary>
     Public ReadOnly Property LeadOutLba As Integer
         Get
             Return TotalSectors
@@ -32,83 +43,185 @@ Public Class CdImage
 
     Public ReadOnly Property TrackCount As Integer
         Get
-            Return tracks.Count
+            Return entries.Count
         End Get
     End Property
 
     Public Function Track(index As Integer) As TrackInfo
-        Return tracks(index)
+        Dim e = entries(index)
+        Return New TrackInfo With {.Number = e.Number, .StartLba = e.TrackStartLba, .IsAudio = e.IsAudio}
     End Function
 
-    ''' <summary>Ouvre une image à partir d'un .cue (ou d'un .ccd — l'.img de même nom est utilisé).</summary>
-    Public Sub New(cuePath As String)
-        Dim dir = System.IO.Path.GetDirectoryName(cuePath)
-        Dim imgName As String = Nothing
-        Dim ss As Integer = 2352
-        Dim uo As Integer = 16
-        Dim firstTr As Integer = 99
-        Dim lastTr As Integer = 0
+    Public Sub New(path As String)
+        Dim dir = System.IO.Path.GetDirectoryName(path)
+        Dim ext = System.IO.Path.GetExtension(path).ToLowerInvariant()
+        Dim curLba = 0
 
-        Dim ext = System.IO.Path.GetExtension(cuePath).ToLowerInvariant()
         If ext = ".cue" Then
-            Dim curMode As String = "MODE1/2352"
-            For Each raw In System.IO.File.ReadAllLines(cuePath)
+            ' --- Parse d'un .cue : mono-fichier multi-pistes (un .img, INDEX absolus)
+            '     OU multi-fichiers (un .bin par piste, LBA cumulés). Une entrée PAR PISTE. ---
+            Dim curFile As String = Nothing
+            Dim curFileBase = 0
+            Dim curNum = 0, curMode = "MODE1/2352", curIsAudio = False, curIndex01 = 0
+            Dim pending = False
+
+            For Each raw In System.IO.File.ReadAllLines(path)
                 Dim line = raw.Trim()
                 If line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase) Then
-                    Dim q1 = line.IndexOf(""""c)
-                    Dim q2 = line.LastIndexOf(""""c)
-                    If q1 >= 0 AndAlso q2 > q1 Then imgName = line.Substring(q1 + 1, q2 - q1 - 1)
+                    If pending Then AddTrack(curFile, dir, curNum, curMode, curIsAudio, curIndex01, curFileBase) : pending = False
+                    Dim q1 = line.IndexOf(""""c), q2 = line.LastIndexOf(""""c)
+                    curFile = If(q1 >= 0 AndAlso q2 > q1, line.Substring(q1 + 1, q2 - q1 - 1), Nothing)
+                    ' base LBA de ce fichier = LBA cumulé courant ; on avance ensuite de sa taille
+                    curFileBase = curLba
+                    curLba = curFileBase + FileSectorsOf(curFile, dir)
+                    curIndex01 = 0
                 ElseIf line.StartsWith("TRACK", StringComparison.OrdinalIgnoreCase) Then
+                    If pending Then AddTrack(curFile, dir, curNum, curMode, curIsAudio, curIndex01, curFileBase) : pending = False
                     Dim parts = line.Split(New Char() {" "c}, StringSplitOptions.RemoveEmptyEntries)
-                    Dim num = CInt(parts(1))
+                    curNum = CInt(parts(1))
                     curMode = parts(2).ToUpperInvariant()
-                    Dim audio = curMode.StartsWith("AUDIO")
-                    tracks.Add(New TrackInfo With {.Number = num, .StartLba = 0, .IsAudio = audio})
-                    firstTr = Math.Min(firstTr, num)
-                    lastTr = Math.Max(lastTr, num)
+                    curIsAudio = curMode.StartsWith("AUDIO")
+                    curIndex01 = 0
+                    pending = True
+                ElseIf line.StartsWith("INDEX 01", StringComparison.OrdinalIgnoreCase) Then
+                    curIndex01 = MsfToSectors(line)
                 End If
             Next
-            ' Taille de secteur selon le mode de la 1re piste data
-            If curMode.EndsWith("2048") Then
-                ss = 2048 : uo = 0
-            Else
-                ss = 2352
-                uo = If(curMode.StartsWith("MODE1"), 16, If(curMode.StartsWith("MODE2"), 24, 0))
-            End If
+            If pending Then AddTrack(curFile, dir, curNum, curMode, curIsAudio, curIndex01, curFileBase)
         Else
-            ' .ccd/.img : image brute 2352, piste data unique
-            imgName = System.IO.Path.GetFileNameWithoutExtension(cuePath) & ".img"
-            tracks.Add(New TrackInfo With {.Number = 1, .StartLba = 0, .IsAudio = False})
-            firstTr = 1 : lastTr = 1
+            ' --- .ccd/.img : image brute mono-fichier, piste data unique ---
+            Dim imgName = System.IO.Path.GetFileNameWithoutExtension(path) & ".img"
+            AddTrack(imgName, dir, 1, "MODE1/2352", False, 0, 0)
+            If entries.Count > 0 Then curLba = entries(0).FileSectors
         End If
 
-        Dim imgPath = System.IO.Path.Combine(dir, imgName)
-        If Not System.IO.File.Exists(imgPath) Then
-            ' repli : .bin de même base
-            imgPath = System.IO.Path.Combine(dir, System.IO.Path.GetFileNameWithoutExtension(cuePath) & ".bin")
+        TotalSectors = curLba
+        If TotalSectors = 0 AndAlso entries.Count > 0 Then
+            TotalSectors = entries(entries.Count - 1).FileStartLba + entries(entries.Count - 1).FileSectors
         End If
-        img = System.IO.File.ReadAllBytes(imgPath)
-        sectorSize = ss
-        userOffset = uo
-        TotalSectors = img.Length \ sectorSize
-        FirstTrack = If(lastTr = 0, 1, firstTr)
-        LastTrack = Math.Max(lastTr, 1)
-        If tracks.Count = 0 Then tracks.Add(New TrackInfo With {.Number = 1, .StartLba = 0, .IsAudio = False})
+
+        ' Trier les pistes par LBA et calculer les plages contiguës (la 1re couvre depuis 0).
+        entries.Sort(Function(a, b) a.TrackStartLba.CompareTo(b.TrackStartLba))
+        For i = 0 To entries.Count - 1
+            Dim e = entries(i)
+            e.RangeStart = If(i = 0, 0, e.TrackStartLba)
+            e.RangeEnd = If(i < entries.Count - 1, entries(i + 1).TrackStartLba, TotalSectors)
+            entries(i) = e
+        Next
+
+        Dim first = Integer.MaxValue, last = 0
+        For Each e In entries
+            first = Math.Min(first, e.Number) : last = Math.Max(last, e.Number)
+        Next
+        FirstTrack = If(entries.Count = 0, 1, first)
+        LastTrack = Math.Max(last, 1)
     End Sub
 
-    ''' <summary>2048 octets de données utilisateur du secteur LBA (MODE1).</summary>
-    Public Function ReadUserData(lba As Integer) As Byte()
+    ''' <summary>Nombre de secteurs bruts (2352 o) d'un fichier image, 0 s'il est absent.</summary>
+    Private Shared Function FileSectorsOf(fileName As String, dir As String) As Integer
+        Dim p = ResolveFile(fileName, dir)
+        If p IsNot Nothing AndAlso System.IO.File.Exists(p) Then Return CInt(New System.IO.FileInfo(p).Length \ 2352)
+        Return 0
+    End Function
+
+    ''' <summary>Ajoute une piste (entrée). N'avance PAS le LBA (géré à la ligne FILE).</summary>
+    Private Sub AddTrack(fileName As String, dir As String, num As Integer, mode As String,
+                         isAudio As Boolean, index01 As Integer, fileBaseLba As Integer)
+        Dim fullPath = ResolveFile(fileName, dir)
+        Dim ss = 2352, uo = 0
+        If mode.EndsWith("2048") Then
+            ss = 2048 : uo = 0
+        ElseIf mode.StartsWith("MODE1") Then
+            ss = 2352 : uo = 16
+        ElseIf mode.StartsWith("MODE2") Then
+            ss = 2352 : uo = 24
+        Else
+            ss = 2352 : uo = 0        ' AUDIO
+        End If
+        Dim sectors = 0
+        If fullPath IsNot Nothing AndAlso System.IO.File.Exists(fullPath) Then
+            sectors = CInt(New System.IO.FileInfo(fullPath).Length \ ss)
+        End If
+        entries.Add(New Entry With {
+            .FilePath = fullPath, .SectorSize = ss, .UserOffset = uo, .IsAudio = isAudio,
+            .Number = num, .FileStartLba = fileBaseLba, .FileSectors = sectors,
+            .TrackStartLba = fileBaseLba + index01})
+    End Sub
+
+    Private Shared Function ResolveFile(fileName As String, dir As String) As String
+        If fileName Is Nothing Then Return Nothing
+        Dim p = System.IO.Path.Combine(dir, fileName)
+        If System.IO.File.Exists(p) Then Return p
+        ' repli : même nom de base avec extension .bin/.img
+        Dim baseName = System.IO.Path.GetFileNameWithoutExtension(fileName)
+        For Each altExt In New String() {".bin", ".img"}
+            Dim alt = System.IO.Path.Combine(dir, baseName & altExt)
+            If System.IO.File.Exists(alt) Then Return alt
+        Next
+        Return p
+    End Function
+
+    Private Shared Function MsfToSectors(indexLine As String) As Integer
+        ' "INDEX 01 mm:ss:ff"
+        Dim parts = indexLine.Split(New Char() {" "c}, StringSplitOptions.RemoveEmptyEntries)
+        Dim msf = parts(parts.Length - 1).Split(":"c)
+        If msf.Length <> 3 Then Return 0
+        Return (CInt(msf(0)) * 60 + CInt(msf(1))) * 75 + CInt(msf(2))
+    End Function
+
+    ''' <summary>Trouve la piste/fichier contenant le LBA absolu.</summary>
+    Private Function EntryForLba(absLba As Integer) As Integer
+        For i = 0 To entries.Count - 1
+            Dim e = entries(i)
+            If absLba >= e.RangeStart AndAlso absLba < e.RangeEnd Then Return i
+        Next
+        Return -1
+    End Function
+
+    Private Function GetStream(path As String) As System.IO.FileStream
+        Dim fs As System.IO.FileStream = Nothing
+        If Not streams.TryGetValue(path, fs) Then
+            fs = New System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+            streams(path) = fs
+        End If
+        Return fs
+    End Function
+
+    ''' <summary>2048 octets de données utilisateur du secteur LBA absolu.</summary>
+    Public Function ReadUserData(absLba As Integer) As Byte()
         Dim result(2047) As Byte
-        If lba < 0 OrElse lba >= TotalSectors Then Return result
-        System.Array.Copy(img, lba * sectorSize + userOffset, result, 0, 2048)
+        Dim i = EntryForLba(absLba)
+        If i < 0 Then Return result
+        Dim e = entries(i)
+        If e.FilePath Is Nothing OrElse Not System.IO.File.Exists(e.FilePath) Then Return result
+        Dim pos As Long = CLng(absLba - e.FileStartLba) * e.SectorSize + e.UserOffset
+        Dim fs = GetStream(e.FilePath)
+        fs.Seek(pos, System.IO.SeekOrigin.Begin)
+        Dim toRead = Math.Min(2048, e.SectorSize - e.UserOffset)
+        Dim off = 0
+        While off < toRead
+            Dim n = fs.Read(result, off, toRead - off)
+            If n <= 0 Then Exit While
+            off += n
+        End While
         Return result
     End Function
 
-    ''' <summary>Secteur brut complet (2352 octets) — utile pour le CD-DA.</summary>
-    Public Function ReadRaw(lba As Integer) As Byte()
-        Dim result(sectorSize - 1) As Byte
-        If lba < 0 OrElse lba >= TotalSectors Then Return result
-        System.Array.Copy(img, lba * sectorSize, result, 0, sectorSize)
+    ''' <summary>Secteur audio brut (2352 octets) — pour le CD-DA (à venir).</summary>
+    Public Function ReadRaw(absLba As Integer) As Byte()
+        Dim i = EntryForLba(absLba)
+        If i < 0 Then Return New Byte(2351) {}
+        Dim e = entries(i)
+        Dim result(e.SectorSize - 1) As Byte
+        If e.FilePath Is Nothing OrElse Not System.IO.File.Exists(e.FilePath) Then Return result
+        Dim fs = GetStream(e.FilePath)
+        fs.Seek(CLng(absLba - e.FileStartLba) * e.SectorSize, System.IO.SeekOrigin.Begin)
+        Dim off = 0
+        While off < e.SectorSize
+            Dim n = fs.Read(result, off, e.SectorSize - off)
+            If n <= 0 Then Exit While
+            off += n
+        End While
         Return result
     End Function
 

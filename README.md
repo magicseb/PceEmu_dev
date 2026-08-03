@@ -18,7 +18,7 @@
 
 ## Limitations actuelles
 
-- ⚠️ CD-ROM² : les jeux bootent et s'exécutent, mais l'audio (ADPCM et CD-DA) et l'auto-boot sans RUN restent à faire
+- ⚠️ CD-ROM² : les jeux bootent (images mono-fichier multi-pistes, un .img avec plusieurs pistes, OU un .bin par piste), chargent leur programme et jouent leurs **samples ADPCM** (voix/effets). Restent à faire : la lecture des pistes **CD-DA** (musique) de bout en bout et l'auto-boot sans RUN ; un jeu qui synchronise sur sa musique CD-DA peut rester en attente de l'audio
 - ❌ Arcade Card
 - ❌ Timing VDC par scanline (pas mid-scanline)
 
@@ -145,7 +145,10 @@ SharpDX a été abandonné au profit de GDI+ pour le rendu.
 9. ✅ **Stéréo PSG** — balance de canal et balance générale appliquées voie par voie (banc StereoPsg : 10/10, dont un cas garde-fou)
 10. ✅ **Acquittement IRQ timer** — After Burner II (Japan) (En) ne gèle plus : délai d'un cran après démasquage d'IRQ ($1402) pour que l'ack ($1403) s'exécute avant la reprise (banc TimerIrqAck : 3/3)
 11. ✅ **Coïncidence RCR / VBlank** — Air Zonk (USA) ne gèle plus en niveau 1 : quand un split raster tombe sur la ligne de VBlank, la VBlank est différée d'une scanline pour être servie séparément (banc VblankRcrSplit : 5/5)
-12. ✅ **CD-ROM² (Super System Card)** — les jeux CD bootent et s'exécutent : interface SCSI $1800-$180F (handshake REQ/ACK), lecture de l'image CD (.cue/.ccd/.img), 256 Ko de RAM CD, IRQ2. La System Card charge le programme depuis le disque et le lance (banc CdRom : 11/11)
+12. ✅ **CD-ROM² (Super System Card)** — les jeux CD bootent et s'exécutent : interface SCSI $1800-$180F (handshake REQ/ACK), lecture de l'image CD (.cue/.ccd/.img), 256 Ko de RAM CD, IRQ2. La System Card charge le programme depuis le disque et le lance
+13. ✅ **Images CD multi-pistes + acquittement d'IRQ CD** — prise en charge des .cue référençant un .bin par piste (piste data + pistes audio), avec calcul des LBA cumulés et pregaps ; la lecture de $1803 acquitte l'IRQ CD (évite une tempête d'IRQ2). Banc CdRom : 13/13
+14. ✅ **Audio ADPCM du CD-ROM²** — DMA automatique des données du CD vers la RAM ADPCM ($180B), décodage OKI ADPCM 4 bits, lecture à la fréquence réglée par $180E et mixage avec le PSG. Addams Family (qui plantait en jouant ses samples) boote, tourne et sort son audio
+15. ✅ **Images CD mono-fichier multi-pistes** — un .cue pointant un unique .img contenant plusieurs pistes (data + audio, aux INDEX absolus) est correctement découpé en pistes, avec une plage LBA par piste. Corrige Implode, qui tombait dans le lecteur CD de la System Card faute de TOC exploitable
 
 ## Notes techniques
 
@@ -153,7 +156,7 @@ SharpDX a été abandonné au profit de GDI+ pour le rendu.
 - Vecteurs d'interruption HuC6280 (différents du 6502 : RESET en $FFFE)
 - Démasquage d'IRQ ($1402) différé d'une instruction : l'idiome « ré-activer puis acquitter » ($1402 puis $1403) des handlers timer ne se ré-entre pas en boucle
 - RCR (comparaison raster) et VBlank sur la même scanline : la VBlank est différée d'une ligne pour rester une interruption distincte (comme le matériel, où le split milieu-de-ligne et la VBlank fin-de-ligne sont espacés)
-- CD-ROM² : interface SCSI ($1800-$180F). Le lecteur pose REQ (bit6 de $1800) quand un octet est prêt ; l'initiateur asserte ACK ($1802 bit7), ce qui fait retomber REQ, puis le relâche (REQ remonte). Machine à phases commande→données→status→message. RAM CD de 256 Ko en banques $68-$87. Interruption du lecteur sur IRQ2 (vecteur $FFF6). La System Card (256 Ko + en-tête de 512 o) se charge comme une HuCard
+- CD-ROM² : interface SCSI ($1800-$180F). Le lecteur pose REQ (bit6 de $1800) quand un octet est prêt ; l'initiateur asserte ACK ($1802 bit7), ce qui fait retomber REQ, puis le relâche (REQ remonte). Machine à phases commande→données→status→message. RAM CD de 256 Ko en banques $68-$87. Interruption du lecteur sur IRQ2 (vecteur $FFF6) ; la lecture de $1803 acquitte le status d'IRQ (sinon tempête). La System Card (256 Ko + en-tête de 512 o) se charge comme une HuCard. Images CD : un .cue peut pointer un unique .img **multi-pistes** (INDEX absolus dans le fichier) OU un .bin par piste (LBA cumulés sur les fichiers) ; une entrée par piste avec une plage LBA propre, pregaps (INDEX 00/01) compris ; secteurs lus à la demande (les pistes audio pèsent des centaines de Mo). **Audio ADPCM** : le jeu écrit un flux vers la RAM ADPCM par DMA depuis le CD ($180B), puis le lecteur décode l'ADPCM OKI 4 bits à la fréquence de $180E et le mixe au PSG
 - MPR7 = 0 au reset ; zéro page logique en $2000, pile en $2100
 - VRAM adressée en words 16 bits, écriture VWR = latch LSB puis MSB
 - Auto-incrément d'adresse VRAM selon CR bits 11-12 (1/32/64/128)
@@ -201,6 +204,11 @@ Les réglages (touches, dossier des jeux, manette) sont conservés dans `PceEmu.
 
 Le numéro de version monte de 0,1 à chaque correction complète appliquée.
 
+- **1.14** — rendu : la mise à l'échelle de la fenêtre ne perd plus de lignes. Un agrandissement NearestNeighbor à facteur fractionnaire laissait tomber des scanlines de façon irrégulière (le texte fin, comme la ligne de titre du menu du PCE Loader, apparaissait strié). Désormais l'image est d'abord agrandie d'un facteur entier (pixels nets, aucune ligne perdue) puis réduite à la taille finale en bilinéaire (« sharp bilinear »)
+- **1.13** — détection de la Super System Card via les registres d'identification de la RAM étendue ($18C0-$18C7). Le BIOS `ex_memopen` lit une signature $AA/$55 en $18C1/$18C2 puis un octet de configuration en $18C3 (nombre d'unités de 64 Ko de RAM étendue). Sans ces registres, `ex_memopen` échouait et les jeux Super CD-ROM² affichaient « This disc only works on the SUPER CD-ROM² SYSTEM ». Corrige la détection pour tous les jeux Super CD qui reposent sur `ex_memopen` (p. ex. Fantasy Star Soldier, qui passe désormais le contrôle et charge son programme)
+- **1.12** — images CD mono-fichier multi-pistes : un .cue pointant un seul .img à plusieurs pistes (data + audio) est découpé correctement, une plage LBA par piste. Corrige Implode, qui tombait dans le lecteur CD de la System Card
+- **1.11** — audio ADPCM du CD-ROM² : DMA des données du CD vers la RAM ADPCM, décodage OKI 4 bits et mixage avec le PSG. Addams Family, qui plantait au moment de jouer ses samples audio, boote, tourne et sort son son
+- **1.10** — images CD multi-pistes : un .cue peut référencer un .bin distinct par piste (piste data + pistes audio CD-DA), avec LBA cumulés et pregaps — corrige l'erreur de chargement sur ces images. Correction d'une tempête d'IRQ2 : la lecture de $1803 acquitte désormais le status d'IRQ CD. Les jeux qui reposent sur le CD-DA (musique) démarrent mais restent en attente de l'audio (à faire)
 - **1.9** — support CD-ROM² / Super System Card : boot et exécution des jeux CD depuis une image .cue/.ccd/.img. Interface SCSI ($1800-$180F) avec handshake REQ/ACK, RAM CD de 256 Ko (banques $68-$87), IRQ2. La System Card lit la TOC, charge le programme du jeu et l'exécute (banc garde-fou CdRom). Ouvrir un .cue/.ccd demande la System Card (mémorisée ensuite). RESTE : audio ADPCM et CD-DA, auto-boot sans RUN, Arcade Card
 - **1.8** — correction du gel d'Air Zonk : lorsqu'un split raster (RCR) coïncide avec la ligne de VBlank, la VBlank est différée d'une scanline afin d'être délivrée comme une interruption distincte (les handlers « RCR ou VBlank » ne ratent plus la VBlank ; banc garde-fou VblankRcrSplit)
 - **1.7** — correction du gel d'After Burner II : délai d'un cran de reconnaissance d'IRQ après un démasquage via $1402, pour que l'idiome « ré-activer puis acquitter » du handler timer ne provoque plus de ré-entrance en boucle (banc garde-fou TimerIrqAck)
@@ -214,6 +222,6 @@ Projet d'apprentissage. Libre de modification pour usage personnel.
 
 ---
 
-**Version** : 1.9 (août 2026) — support CD-ROM² : boot et exécution des jeux CD  
+**Version** : 1.14 (août 2026) — mise à l'échelle sans lignes perdues (sharp bilinear)  
 **Langage** : VB.NET (.NET 8)  
 **Plateforme** : Windows (WinForms + GDI+)
