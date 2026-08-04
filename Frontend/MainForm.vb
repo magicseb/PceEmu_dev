@@ -27,6 +27,14 @@ Public Class MainForm
     Private superGrafxMode As Boolean = False
     Private superGrafxMenuItem As System.Windows.Forms.ToolStripMenuItem
     Private gamepadMenuItem As System.Windows.Forms.ToolStripMenuItem
+    Private aspect43MenuItem As System.Windows.Forms.ToolStripMenuItem
+    ''' <summary>La fenêtre se verrouille en 4:3 au redimensionnement quand vrai.</summary>
+    Private lockAspect43 As Boolean = True
+    Private fullscreenMenuItem As System.Windows.Forms.ToolStripMenuItem
+    Private isFullscreen As Boolean = False
+    Private savedBounds As System.Drawing.Rectangle
+    Private savedBorder As System.Windows.Forms.FormBorderStyle
+    Private savedState As System.Windows.Forms.FormWindowState
     
     Public Sub New()
         MyBase.New()
@@ -39,6 +47,15 @@ Public Class MainForm
         Me.Text = "PceEmu - PC Engine Emulator"
         Me.Size = New System.Drawing.Size(1024, 600)
         Me.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+
+        ' Icône de la fenêtre / barre des tâches (ressource embarquée « PceEmu.ico »)
+        Try
+            Using st = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("PceEmu.ico")
+                If st IsNot Nothing Then Me.Icon = New System.Drawing.Icon(st)
+            End Using
+        Catch
+            ' pas d'icône : on garde celle par défaut
+        End Try
         
         ' Menu
         menuStripMain = New System.Windows.Forms.MenuStrip()
@@ -77,6 +94,13 @@ Public Class MainForm
         viewMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("Scale &1x", Nothing, AddressOf MenuScale1x))
         viewMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("Scale &2x", Nothing, AddressOf MenuScale2x))
         viewMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripMenuItem("Scale &3x", Nothing, AddressOf MenuScale3x))
+        viewMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripSeparator())
+        aspect43MenuItem = New System.Windows.Forms.ToolStripMenuItem("Aspect &4:3", Nothing, AddressOf MenuToggleAspect43)
+        aspect43MenuItem.CheckOnClick = True
+        aspect43MenuItem.Checked = True
+        viewMenu.DropDownItems.Add(aspect43MenuItem)
+        fullscreenMenuItem = New System.Windows.Forms.ToolStripMenuItem("Plein &écran" & vbTab & "F11", Nothing, AddressOf MenuToggleFullscreen)
+        viewMenu.DropDownItems.Add(fullscreenMenuItem)
         
         ' Menu Options
         Dim optionsMenu = New System.Windows.Forms.ToolStripMenuItem("&Options")
@@ -115,6 +139,9 @@ Public Class MainForm
         
         ' Événements clavier
         Me.KeyPreview = True
+
+        ' Fenêtre en 4:3 par défaut (panneau de rendu 640×480)
+        SetPanel43(640)
     End Sub
 
     ''' <summary>Ouvre une ROM</summary>
@@ -202,6 +229,7 @@ Public Class MainForm
             ' Initialiser le rendu Direct3D 11
             If renderer IsNot Nothing Then renderer.Dispose()
             renderer = New Direct3D11Renderer(PceConstants.SCREEN_WIDTH, PceConstants.SCREEN_HEIGHT, renderPanel)
+            renderer.ForceAspect43 = lockAspect43
             
             ' Initialiser l'audio
             If audioOut IsNot Nothing Then audioOut.Dispose()
@@ -354,16 +382,102 @@ Public Class MainForm
         Return False
     End Function
 
+    ''' <summary>Dimensionne la fenêtre pour un panneau de rendu de largeur donnée en 4:3.</summary>
+    Private Sub SetPanel43(width As Integer)
+        Dim chromeH = menuStripMain.Height + statusLabel.Height
+        Me.ClientSize = New System.Drawing.Size(width, CInt(width * 3 / 4) + chromeH)
+    End Sub
+
     Private Sub MenuScale1x(sender As Object, e As EventArgs)
-        Me.ClientSize = New System.Drawing.Size(256, 224 + menuStripMain.Height)
+        SetPanel43(320)   ' 320×240 = 4:3
     End Sub
 
     Private Sub MenuScale2x(sender As Object, e As EventArgs)
-        Me.ClientSize = New System.Drawing.Size(512, 448 + menuStripMain.Height)
+        SetPanel43(640)   ' 640×480 = 4:3
     End Sub
 
     Private Sub MenuScale3x(sender As Object, e As EventArgs)
-        Me.ClientSize = New System.Drawing.Size(768, 672 + menuStripMain.Height)
+        SetPanel43(960)   ' 960×720 = 4:3
+    End Sub
+
+    Private Sub MenuToggleAspect43(sender As Object, e As EventArgs)
+        lockAspect43 = aspect43MenuItem.Checked
+        If renderer IsNot Nothing Then renderer.ForceAspect43 = lockAspect43
+        If lockAspect43 Then SetPanel43(renderPanel.ClientSize.Width)   ' resnappe la fenêtre en 4:3
+        renderPanel.Invalidate()
+    End Sub
+
+    Private Sub MenuToggleFullscreen(sender As Object, e As EventArgs)
+        ToggleFullscreen()
+    End Sub
+
+    ''' <summary>Bascule plein écran : cache menu/barre d'état et bordure, couvre l'écran.
+    ''' L'image reste en 4:3 (letterbox) via le rendu. F11 bascule, Échap sort.</summary>
+    Private Sub ToggleFullscreen()
+        If Not isFullscreen Then
+            savedBounds = Me.Bounds
+            savedBorder = Me.FormBorderStyle
+            savedState = Me.WindowState
+            menuStripMain.Visible = False
+            statusLabel.Visible = False
+            Me.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None
+            Me.WindowState = System.Windows.Forms.FormWindowState.Normal
+            Me.Bounds = System.Windows.Forms.Screen.FromControl(Me).Bounds
+            isFullscreen = True
+        Else
+            menuStripMain.Visible = True
+            statusLabel.Visible = True
+            Me.FormBorderStyle = savedBorder
+            Me.Bounds = savedBounds
+            Me.WindowState = savedState
+            isFullscreen = False
+        End If
+        If fullscreenMenuItem IsNot Nothing Then fullscreenMenuItem.Checked = isFullscreen
+        renderPanel.Invalidate()
+    End Sub
+
+    ' ---- Verrouillage de l'aspect 4:3 de la fenêtre au redimensionnement ----
+    Private Const WM_SIZING As Integer = &H214
+    Private Const WMSZ_LEFT As Integer = 1, WMSZ_RIGHT As Integer = 2
+    Private Const WMSZ_TOP As Integer = 3, WMSZ_TOPLEFT As Integer = 4
+    Private Const WMSZ_TOPRIGHT As Integer = 5, WMSZ_BOTTOM As Integer = 6
+    Private Const WMSZ_BOTTOMLEFT As Integer = 7, WMSZ_BOTTOMRIGHT As Integer = 8
+
+    <System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)>
+    Private Structure NativeRect
+        Public Left As Integer, Top As Integer, Right As Integer, Bottom As Integer
+    End Structure
+
+    ''' <summary>Force la fenêtre à garder un panneau de rendu en 4:3 pendant le drag.</summary>
+    Protected Overrides Sub WndProc(ByRef m As System.Windows.Forms.Message)
+        If m.Msg = WM_SIZING AndAlso lockAspect43 Then
+            Dim r = CType(System.Runtime.InteropServices.Marshal.PtrToStructure(m.LParam, GetType(NativeRect)), NativeRect)
+            Dim edge = m.WParam.ToInt32()
+            ' chrome hors panneau : bordures/titre + barre de menu + barre d'état
+            Dim ncW = Me.Width - Me.ClientSize.Width
+            Dim ncH = Me.Height - Me.ClientSize.Height
+            Dim chromeH = ncH + menuStripMain.Height + statusLabel.Height
+            Select Case edge
+                Case WMSZ_LEFT, WMSZ_RIGHT
+                    Dim panelW = (r.Right - r.Left) - ncW
+                    r.Bottom = r.Top + CInt(panelW * 3 / 4) + chromeH
+                Case WMSZ_TOP, WMSZ_BOTTOM
+                    Dim panelH = (r.Bottom - r.Top) - chromeH
+                    r.Right = r.Left + CInt(panelH * 4 / 3) + ncW
+                Case Else   ' coins : la largeur pilote la hauteur
+                    Dim panelW = (r.Right - r.Left) - ncW
+                    Dim newH = CInt(panelW * 3 / 4) + chromeH
+                    If edge = WMSZ_TOPLEFT OrElse edge = WMSZ_TOPRIGHT Then
+                        r.Top = r.Bottom - newH
+                    Else
+                        r.Bottom = r.Top + newH
+                    End If
+            End Select
+            System.Runtime.InteropServices.Marshal.StructureToPtr(r, m.LParam, False)
+            m.Result = New IntPtr(1)
+            Return
+        End If
+        MyBase.WndProc(m)
     End Sub
 
     Private Sub MenuExit(sender As Object, e As EventArgs)
@@ -517,6 +631,11 @@ Public Class MainForm
 
     ''' <summary>Gestion des touches</summary>
     Protected Overrides Sub OnKeyDown(e As System.Windows.Forms.KeyEventArgs)
+        If e.KeyCode = System.Windows.Forms.Keys.F11 Then
+            ToggleFullscreen() : e.Handled = True : Return
+        ElseIf e.KeyCode = System.Windows.Forms.Keys.Escape AndAlso isFullscreen Then
+            ToggleFullscreen() : e.Handled = True : Return
+        End If
         inputManager.HandleKeyDown(e)
         MyBase.OnKeyDown(e)
     End Sub

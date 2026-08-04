@@ -159,25 +159,36 @@ Public Class CdRom
                 If (value And &H3) <> 0 Then AdpcmDmaFromCd()
             Case &H8
                 adpcmAddrLatch = (adpcmAddrLatch And &HFF00) Or (value And &HFF)
+                If (adpcmControl And &H10) <> 0 Then adpcmLength = adpcmLatchAddr()
             Case &H9
                 adpcmAddrLatch = (adpcmAddrLatch And &HFF) Or ((value And &HFF) << 8)
-            Case &HD        ' contrôle adresse/lecture ADPCM
-                adpcmControl = value
-                If (value And &H80) <> 0 Then
-                    adpcmPlaying = False : adpcmEnded = False
-                    adpcmReadAddr = 0 : adpcmWriteAddr = 0
-                End If
-                If (value And &H2) <> 0 Then adpcmWriteAddr = adpcmLatchAddr()
-                If (value And &H10) <> 0 Then
-                    ' fixe la longueur/fin de lecture depuis le latch ; départ à 0
-                    adpcmPlayEnd = adpcmLatchAddr()
-                    adpcmReadAddr = 0
-                End If
-                If (value And &H60) <> 0 Then
-                    ' démarrage de la lecture ADPCM
-                    adpcmPlaying = True : adpcmEnded = False
-                    adpcmPredictor = 0 : adpcmStepIndex = 0
-                    adpcmHighNibble = False : adpcmFrac = 0.0
+                If (adpcmControl And &H10) <> 0 Then adpcmLength = adpcmLatchAddr()
+            Case &HD        ' contrôle ADPCM ($180D) — sémantique Mednafen pcecd.cpp
+                If (value And &H80) <> 0 Then       ' D7 : reset complet
+                    adpcmAddrLatch = 0 : adpcmReadAddr = 0 : adpcmWriteAddr = 0
+                    adpcmLength = 0 : adpcmPlaying = False : adpcmEnded = False
+                    adpcmHighNibble = False : adpcmPredictor = 0 : adpcmStepIndex = 0
+                    adpcmControl = 0
+                Else
+                    ' D5 ($20) : lecture marche/arrêt (sur front)
+                    If adpcmPlaying AndAlso (value And &H20) = 0 Then adpcmPlaying = False
+                    If (Not adpcmPlaying) AndAlso (value And &H20) <> 0 Then
+                        adpcmPlaying = True : adpcmEnded = False
+                        adpcmHighNibble = False : adpcmPredictor = 0 : adpcmStepIndex = 0 : adpcmFrac = 0.0
+                    End If
+                    ' D4 ($10) : longueur = latch (compteur décroissant)
+                    If (value And &H10) <> 0 Then adpcmLength = adpcmLatchAddr() : adpcmEnded = False
+                    ' D3 ($08) front : adresse de LECTURE = latch (ou latch-1 si D2=0)
+                    If (adpcmControl And &H8) = 0 AndAlso (value And &H8) <> 0 Then
+                        If (value And &H4) <> 0 Then adpcmReadAddr = adpcmLatchAddr() _
+                        Else adpcmReadAddr = (adpcmLatchAddr() - 1) And &HFFFF
+                    End If
+                    ' D1 ($02) front : adresse d'ÉCRITURE = latch (ou latch-1 si D0=0)
+                    If (adpcmControl And &H2) = 0 AndAlso (value And &H2) <> 0 Then
+                        adpcmWriteAddr = adpcmLatchAddr()
+                        If (value And &H1) = 0 Then adpcmWriteAddr = (adpcmWriteAddr - 1) And &HFFFF
+                    End If
+                    adpcmControl = value
                 End If
             Case &HE        ' fréquence de lecture ADPCM
                 adpcmRate = value
@@ -264,7 +275,7 @@ Public Class CdRom
             Case &HDE       ' GET DIR INFO (TOC)
                 EnterDataIn(BuildTocResponse())
             Case &HD8       ' SAPSP : régler le début de lecture audio (et démarrer)
-                cddaStartLba = ParsePlayPos(cmd(2), cmd(3), cmd(4))
+                cddaStartLba = ParsePlayPos(cmd(9), cmd(2), cmd(3), cmd(4), cmd(5))
                 cddaCurLba = cddaStartLba
                 cddaEndLba = disc.LeadOutLba
                 cddaMode = 3
@@ -274,12 +285,12 @@ Public Class CdRom
                 cddaPaused = (cmd(1) = 0)     ' mode 0 : armé mais en pause jusqu'au SAPEP
                 EnterStatus(0)
             Case &HD9       ' SAPEP : régler la fin + le mode, lancer la lecture
-                cddaEndLba = ParsePlayPos(cmd(2), cmd(3), cmd(4))
+                cddaEndLba = ParsePlayPos(cmd(9), cmd(2), cmd(3), cmd(4), cmd(5))
                 cddaMode = cmd(1) And &H3
                 cddaCurLba = cddaStartLba
                 cddaSectorValid = False
                 cddaSampleInSector = 0
-                cddaPlaying = True
+                cddaPlaying = (cmd(1) <> 0)   ' mode 0 = SILENT : arrêter, sinon jouer
                 cddaPaused = False
                 EnterStatus(0)
             Case &HDA       ' PAUSE audio
@@ -293,11 +304,33 @@ Public Class CdRom
     End Sub
 
     ''' <summary>Convertit une position de lecture MSF (BCD) en LBA absolu, borné au disque.</summary>
-    Private Function ParsePlayPos(m As Integer, sVal As Integer, f As Integer) As Integer
-        Dim lba = (FromBcd(m) * 60 + FromBcd(sVal)) * 75 + FromBcd(f) - 150
+    ''' <summary>Convertit la position d'une commande D8/D9 en LBA absolu.
+    ''' Le TYPE d'adresse est dans cmd(9) &amp; &amp;HC0 (sémantique Mednafen) :
+    '''   &amp;H00 = LBA binaire (b3,b4,b5) ; &amp;H40 = MSF BCD (b2,b3,b4) ;
+    '''   &amp;H80 = NUMÉRO DE PISTE (b2, BCD) → début de cette piste.</summary>
+    Private Function ParsePlayPos(atype As Integer, b2 As Integer, b3 As Integer, b4 As Integer, b5 As Integer) As Integer
+        Dim lba As Integer
+        Select Case atype And &HC0
+            Case &H0        ' LBA binaire
+                lba = (b3 << 16) Or (b4 << 8) Or b5
+            Case &H80       ' numéro de piste → LBA de début de piste (piste > dernière = lead-out)
+                Dim trackNo = FromBcd(b2)
+                If trackNo < 1 Then trackNo = 1
+                If trackNo > disc.LastTrack Then Return disc.LeadOutLba
+                lba = TrackStartLbaOf(trackNo)
+            Case Else       ' &H40 : MSF BCD
+                lba = (FromBcd(b2) * 60 + FromBcd(b3)) * 75 + FromBcd(b4) - 150
+        End Select
         If lba < 0 Then lba = 0
         If lba >= disc.LeadOutLba Then lba = disc.LeadOutLba - 1
         Return lba
+    End Function
+
+    Private Function TrackStartLbaOf(trackNo As Integer) As Integer
+        For i = 0 To disc.TrackCount - 1
+            If disc.Track(i).Number = trackNo Then Return disc.Track(i).StartLba
+        Next
+        Return disc.LeadOutLba
     End Function
 
     ''' <summary>Réponse READ SUB-Q : 10 octets (status, contrôle, piste, index, MSF rel, MSF abs).</summary>
@@ -356,7 +389,7 @@ Public Class CdRom
         ' fréquence ADPCM ≈ 32000 / (16 - débit) Hz
         Dim div = 16 - (adpcmRate And &HF)
         If div < 1 Then div = 1
-        Dim freq = 32000.0 / div
+        Dim freq = 32087.5 / div
         Dim ratio = freq / 44100.0
         For i = 0 To numSamples - 1 Step 2
             If Not adpcmPlaying Then Exit For
@@ -377,11 +410,20 @@ Public Class CdRom
 
     ''' <summary>Décode le prochain demi-octet ADPCM et met à jour le prédicteur.</summary>
     Private Sub AdpcmDecodeNext()
-        If adpcmReadAddr > adpcmPlayEnd Then
-            adpcmPlaying = False : adpcmEnded = True : Return
+        ' adpcmHighNibble=False : début d'octet → charger l'octet + décoder le demi-octet HAUT
+        ' adpcmHighNibble=True  : décoder le demi-octet BAS du même octet
+        If Not adpcmHighNibble Then
+            ' fin de sample : longueur épuisée (et D4 non tenu)
+            If adpcmLength = 0 AndAlso (adpcmControl And &H10) = 0 Then
+                adpcmEnded = True
+                If (adpcmControl And &H40) <> 0 Then adpcmPlaying = False   ' D6 : stop en fin
+            End If
+            adpcmCurByte = CInt(adpcmRam(adpcmReadAddr And &HFFFF))
+            adpcmReadAddr = (adpcmReadAddr + 1) And &HFFFF
+            If adpcmLength <> 0 AndAlso (adpcmControl And &H10) = 0 Then adpcmLength -= 1
         End If
-        If Not adpcmHighNibble Then adpcmCurByte = CInt(adpcmRam(adpcmReadAddr And &HFFFF))
-        Dim nib = If(adpcmHighNibble, (adpcmCurByte >> 4) And &HF, adpcmCurByte And &HF)
+        If Not adpcmPlaying Then Return
+        Dim nib = If(Not adpcmHighNibble, (adpcmCurByte >> 4) And &HF, adpcmCurByte And &HF)
         Dim stp = AdpcmStep(adpcmStepIndex)
         Dim diff = stp >> 3
         If (nib And 1) <> 0 Then diff += stp >> 2
@@ -393,7 +435,6 @@ Public Class CdRom
         adpcmStepIndex += AdpcmIndex(nib And 7)
         If adpcmStepIndex < 0 Then adpcmStepIndex = 0
         If adpcmStepIndex > 48 Then adpcmStepIndex = 48
-        If adpcmHighNibble Then adpcmReadAddr += 1
         adpcmHighNibble = Not adpcmHighNibble
     End Sub
 
@@ -430,12 +471,18 @@ Public Class CdRom
     End Function
 
     Private Sub EndOfPlayback()
+        ' Modes SAPEP (cmd(1)) — sémantique du matériel (source Mednafen pcecd_drive) :
+        '   1 = LOOP      : reboucler au début de segment, continuer (PAS d'IRQ)
+        '   2 = INTERRUPT : arrêter + IRQ de fin
+        '   0 = SILENT / 3 = NORMAL : arrêter, PAS d'IRQ
         Select Case cddaMode
-            Case 2      ' boucler
+            Case 1      ' LOOP : reboucler et continuer à jouer (musiques de menu)
                 cddaCurLba = cddaStartLba : cddaSectorValid = False
-            Case Else   ' jouer une fois : arrêter + signaler la fin
+            Case 2      ' INTERRUPT : arrêter + signaler la fin
                 cddaPlaying = False
                 irqStatus = irqStatus Or IRQ_CDDA_DONE
+            Case Else   ' 0 (SILENT) / 3 (NORMAL) : arrêter sans IRQ
+                cddaPlaying = False
         End Select
     End Sub
 
@@ -499,5 +546,54 @@ Public Class CdRom
         Dim f = lba + 150
         Return New Byte() {ToBcd(f \ (75 * 60)), ToBcd((f \ 75) Mod 60), ToBcd(f Mod 75)}
     End Function
+
+    ' ===================== Sauvegarde d'état =====================
+    ' `disc` (image CD) n'est PAS sérialisé : il est ré-inséré au chargement.
+
+    Public Sub SaveState(w As System.IO.BinaryWriter)
+        w.Write(sBsy) : w.Write(sReq) : w.Write(sMsg) : w.Write(sCd) : w.Write(sIo)
+        w.Write(dataBusIn) : w.Write(dataBusOut) : w.Write(ackAsserted)
+        w.Write(CInt(ph))
+        For i = 0 To 15 : w.Write(cmd(i)) : Next
+        w.Write(cmdIdx) : w.Write(cmdLen)
+        w.Write(dataBuf.Length)
+        If dataBuf.Length > 0 Then w.Write(dataBuf, 0, dataBuf.Length)
+        w.Write(dataPos) : w.Write(statusByte)
+        w.Write(irqEnable) : w.Write(irqStatus)
+        w.Write(cddaPlaying) : w.Write(cddaPaused)
+        w.Write(cddaStartLba) : w.Write(cddaEndLba) : w.Write(cddaCurLba) : w.Write(cddaMode)
+        w.Write(cddaSector, 0, cddaSector.Length)
+        w.Write(cddaSampleInSector) : w.Write(cddaSectorValid)
+        w.Write(adpcmRam, 0, adpcmRam.Length)
+        w.Write(adpcmWriteAddr) : w.Write(adpcmReadAddr) : w.Write(adpcmLength)
+        w.Write(adpcmDmaCtrl) : w.Write(adpcmControl) : w.Write(adpcmRate)
+        w.Write(adpcmPlaying) : w.Write(adpcmEnded) : w.Write(adpcmPlayEnd)
+        w.Write(adpcmPredictor) : w.Write(adpcmStepIndex) : w.Write(adpcmHighNibble)
+        w.Write(adpcmFrac) : w.Write(adpcmCurByte) : w.Write(adpcmAddrLatch)
+        w.Write(BramEnabled)
+    End Sub
+
+    Public Sub LoadState(r As System.IO.BinaryReader)
+        sBsy = r.ReadBoolean() : sReq = r.ReadBoolean() : sMsg = r.ReadBoolean() : sCd = r.ReadBoolean() : sIo = r.ReadBoolean()
+        dataBusIn = r.ReadInt32() : dataBusOut = r.ReadInt32() : ackAsserted = r.ReadBoolean()
+        ph = CType(r.ReadInt32(), Phase)
+        For i = 0 To 15 : cmd(i) = r.ReadInt32() : Next
+        cmdIdx = r.ReadInt32() : cmdLen = r.ReadInt32()
+        Dim dbLen = r.ReadInt32()
+        dataBuf = If(dbLen > 0, r.ReadBytes(dbLen), New Byte(-1) {})
+        dataPos = r.ReadInt32() : statusByte = r.ReadInt32()
+        irqEnable = r.ReadInt32() : irqStatus = r.ReadInt32()
+        cddaPlaying = r.ReadBoolean() : cddaPaused = r.ReadBoolean()
+        cddaStartLba = r.ReadInt32() : cddaEndLba = r.ReadInt32() : cddaCurLba = r.ReadInt32() : cddaMode = r.ReadInt32()
+        Array.Copy(r.ReadBytes(cddaSector.Length), cddaSector, cddaSector.Length)
+        cddaSampleInSector = r.ReadInt32() : cddaSectorValid = r.ReadBoolean()
+        Array.Copy(r.ReadBytes(adpcmRam.Length), adpcmRam, adpcmRam.Length)
+        adpcmWriteAddr = r.ReadInt32() : adpcmReadAddr = r.ReadInt32() : adpcmLength = r.ReadInt32()
+        adpcmDmaCtrl = r.ReadInt32() : adpcmControl = r.ReadInt32() : adpcmRate = r.ReadInt32()
+        adpcmPlaying = r.ReadBoolean() : adpcmEnded = r.ReadBoolean() : adpcmPlayEnd = r.ReadInt32()
+        adpcmPredictor = r.ReadInt32() : adpcmStepIndex = r.ReadInt32() : adpcmHighNibble = r.ReadBoolean()
+        adpcmFrac = r.ReadDouble() : adpcmCurByte = r.ReadInt32() : adpcmAddrLatch = r.ReadInt32()
+        BramEnabled = r.ReadBoolean()
+    End Sub
 
 End Class

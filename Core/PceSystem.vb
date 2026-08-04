@@ -262,6 +262,12 @@ Public Class PceSystem
 
                     w.Write(_frameCount)
                     w.Write(cycleDebt)
+
+                    ' Bloc CD : uniquement pour les jeux CD (RAM CD = code du jeu + état du lecteur)
+                    If cd IsNot Nothing Then
+                        mpu.SaveCdRam(w)
+                        cd.SaveState(w)
+                    End If
                 End Using
             End Using
         End Using
@@ -309,6 +315,12 @@ Public Class PceSystem
 
                     _frameCount = r.ReadInt32()
                     cycleDebt = r.ReadInt32()
+
+                    ' Bloc CD : présent seulement si un CD est inséré (jeux CD)
+                    If cd IsNot Nothing Then
+                        mpu.LoadCdRam(r)
+                        cd.LoadState(r)
+                    End If
                 End Using
             End Using
         End Using

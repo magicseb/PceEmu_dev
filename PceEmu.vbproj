@@ -7,6 +7,7 @@
     <RootNamespace>PceEmu</RootNamespace>
     <AssemblyName>PceEmu</AssemblyName>
     <StartupObject>PceEmu.Program</StartupObject>
+    <ApplicationIcon>ico\PceEmu.ico</ApplicationIcon>
     <OptionStrict>Off</OptionStrict>
     <OptionExplicit>On</OptionExplicit>
     <!-- Performance : désactive les vérifications d'overflow (boucle CPU chaude) -->
@@ -22,6 +23,13 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
     <!-- Décodage 7z ; le ZIP passe par la bibliothèque standard -->
     <PackageReference Include="SharpCompress" Version="1.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Icône embarquée (chargée dans Me.Icon pour la fenêtre / barre des tâches) -->
+    <EmbeddedResource Include="ico\PceEmu.ico">
+      <LogicalName>PceEmu.ico</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

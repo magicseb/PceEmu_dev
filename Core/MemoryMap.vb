@@ -320,4 +320,18 @@ Public Class MemoryMap
         BramModified = True
     End Sub
 
+    ''' <summary>Sauve la RAM CD étendue ($68-$87). Bloc séparé, écrit seulement
+    ''' pour les jeux CD (le format des sauvegardes cartouche reste inchangé).</summary>
+    Public Sub SaveCdRam(w As System.IO.BinaryWriter)
+        Dim n = If(cdRam IsNot Nothing, cdRam.Length, 0)
+        w.Write(n)
+        If n > 0 Then w.Write(cdRam, 0, n)
+    End Sub
+
+    Public Sub LoadCdRam(r As System.IO.BinaryReader)
+        Dim n = r.ReadInt32()
+        Dim data = r.ReadBytes(n)
+        If cdRam IsNot Nothing AndAlso n > 0 Then Array.Copy(data, cdRam, Math.Min(n, cdRam.Length))
+    End Sub
+
 End Class
