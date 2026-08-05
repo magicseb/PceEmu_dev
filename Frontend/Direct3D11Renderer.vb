@@ -1,6 +1,6 @@
 ''' <summary>Rendu GDI+ : bitmap persistant + Paint event + double-buffering</summary>
 Public Class Direct3D11Renderer
-    Implements IDisposable
+    Implements IEmuRenderer
 
     Private bitmap As System.Drawing.Bitmap
     Private snapshot As System.Drawing.Bitmap        ' copie 1:1 de la frame pour dessiner hors verrou
@@ -12,7 +12,10 @@ Public Class Direct3D11Renderer
     Private curHeight As Integer = 0
     ''' <summary>Vrai = affichage en 4:3 (aspect TV d'origine, pixels non carrés) ;
     ''' Faux = conserve l'aspect des pixels internes.</summary>
-    Public ForceAspect43 As Boolean = True
+    Public Property ForceAspect43 As Boolean = True Implements IEmuRenderer.ForceAspect43
+    ''' <summary>Repli GDI+ : le shader sélectionné est mémorisé mais le rendu
+    ''' reste en « sharp bilinear » (le vrai pipeline shaders est dans D3DRenderer).</summary>
+    Public Property Shader As PceShader = PceShader.SharpPixels Implements IEmuRenderer.Shader
 
     Public Sub New(width As UInteger, height As UInteger, panelRef As System.Windows.Forms.Panel)
         panel = panelRef
@@ -28,7 +31,7 @@ Public Class Direct3D11Renderer
     End Sub
 
     ''' <summary>Met à jour l'image depuis le framebuffer (appelable depuis le thread d'émulation)</summary>
-    Public Sub UpdateFrame(framebuffer() As Integer, displayWidth As Integer, displayHeight As Integer)
+    Public Sub UpdateFrame(framebuffer() As Integer, displayWidth As Integer, displayHeight As Integer) Implements IEmuRenderer.UpdateFrame
         If framebuffer Is Nothing OrElse panel Is Nothing Then Return
         If displayWidth < 8 Then displayWidth = 256
         If displayHeight < 8 Then displayHeight = 224

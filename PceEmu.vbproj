@@ -23,6 +23,8 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
     <!-- Décodage 7z ; le ZIP passe par la bibliothèque standard -->
     <PackageReference Include="SharpCompress" Version="1.0.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.6.2" />
   </ItemGroup>
 
   <ItemGroup>

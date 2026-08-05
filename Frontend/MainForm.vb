@@ -7,7 +7,10 @@ Public Class MainForm
     Private statusLabel As System.Windows.Forms.Label
     
     Private pceSystem As PceSystem
-    Private renderer As Direct3D11Renderer
+    Private renderer As IEmuRenderer
+    Private usingD3D As Boolean = False
+    Private currentShader As PceShader = PceShader.SharpPixels
+    Private shaderSharpItem, shaderSmoothItem, shaderScanItem, shaderCrtItem As System.Windows.Forms.ToolStripMenuItem
     Private audioOut As AudioOut
     Private ReadOnly config As Settings = Settings.Load()
     Private inputManager As InputManager
@@ -101,6 +104,18 @@ Public Class MainForm
         viewMenu.DropDownItems.Add(aspect43MenuItem)
         fullscreenMenuItem = New System.Windows.Forms.ToolStripMenuItem("Plein &écran" & vbTab & "F11", Nothing, AddressOf MenuToggleFullscreen)
         viewMenu.DropDownItems.Add(fullscreenMenuItem)
+        viewMenu.DropDownItems.Add(New System.Windows.Forms.ToolStripSeparator())
+        Dim shaderMenu = New System.Windows.Forms.ToolStripMenuItem("&Filtre d'affichage")
+        shaderSharpItem = New System.Windows.Forms.ToolStripMenuItem("Pixels &nets", Nothing, AddressOf MenuShaderSelect)
+        shaderSharpItem.Tag = PceShader.SharpPixels : shaderSharpItem.Checked = True
+        shaderSmoothItem = New System.Windows.Forms.ToolStripMenuItem("Pixels &lisses", Nothing, AddressOf MenuShaderSelect)
+        shaderSmoothItem.Tag = PceShader.SmoothPixels
+        shaderScanItem = New System.Windows.Forms.ToolStripMenuItem("&Scanlines", Nothing, AddressOf MenuShaderSelect)
+        shaderScanItem.Tag = PceShader.Scanlines
+        shaderCrtItem = New System.Windows.Forms.ToolStripMenuItem("&CRT", Nothing, AddressOf MenuShaderSelect)
+        shaderCrtItem.Tag = PceShader.Crt
+        shaderMenu.DropDownItems.AddRange({shaderSharpItem, shaderSmoothItem, shaderScanItem, shaderCrtItem})
+        viewMenu.DropDownItems.Add(shaderMenu)
         
         ' Menu Options
         Dim optionsMenu = New System.Windows.Forms.ToolStripMenuItem("&Options")
@@ -226,10 +241,19 @@ Public Class MainForm
             currentRomPath = romPath
             pceSystem.LoadBram(BramPath())
             
-            ' Initialiser le rendu Direct3D 11
+            ' Initialiser le rendu : Direct3D 11 (shaders) avec repli GDI+
             If renderer IsNot Nothing Then renderer.Dispose()
-            renderer = New Direct3D11Renderer(PceConstants.SCREEN_WIDTH, PceConstants.SCREEN_HEIGHT, renderPanel)
+            Try
+                renderer = New D3DRenderer(renderPanel)
+                usingD3D = True
+                ShowStatus("Affichage Direct3D 11")
+            Catch ex As Exception
+                renderer = New Direct3D11Renderer(PceConstants.SCREEN_WIDTH, PceConstants.SCREEN_HEIGHT, renderPanel)
+                usingD3D = False
+                ShowStatus("Affichage GDI+ (Direct3D indisponible)")
+            End Try
             renderer.ForceAspect43 = lockAspect43
+            renderer.Shader = currentShader
             
             ' Initialiser l'audio
             If audioOut IsNot Nothing Then audioOut.Dispose()
@@ -409,6 +433,16 @@ Public Class MainForm
 
     Private Sub MenuToggleFullscreen(sender As Object, e As EventArgs)
         ToggleFullscreen()
+    End Sub
+
+    Private Sub MenuShaderSelect(sender As Object, e As EventArgs)
+        Dim item = CType(sender, System.Windows.Forms.ToolStripMenuItem)
+        currentShader = CType(item.Tag, PceShader)
+        For Each it In {shaderSharpItem, shaderSmoothItem, shaderScanItem, shaderCrtItem}
+            it.Checked = (it Is item)
+        Next
+        If renderer IsNot Nothing Then renderer.Shader = currentShader
+        If Not usingD3D Then ShowStatus("Note : les filtres nécessitent Direct3D (repli GDI+ actif)")
     End Sub
 
     ''' <summary>Bascule plein écran : cache menu/barre d'état et bordure, couvre l'écran.

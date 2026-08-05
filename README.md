@@ -204,6 +204,8 @@ Les réglages (touches, dossier des jeux, manette) sont conservés dans `PceEmu.
 
 Le numéro de version monte de 0,1 à chaque correction complète appliquée.
 
+- **1.24** — correctif de l'affichage Direct3D : cisaillement horizontal de l'image (chaque ligne décalée). Le framebuffer a un pas (stride) fixe de 512 pixels quelle que soit la largeur affichée ; le renderer D3D lisait au pas de la largeur affichée, d'où une dérive ligne à ligne. Il lit désormais au bon pas (comme le renderer GDI+)
+- **1.23** — **affichage Direct3D 11 avec shaders sélectionnables**. Le rendu passait par GDI+ (mise à l'échelle CPU) ; il utilise désormais un vrai pipeline GPU Direct3D 11 (via Vortice.Windows) : la frame est chargée dans une texture et affichée par un shader HLSL au choix, dans le menu **View → Filtre d'affichage** : **Pixels nets** (échantillonnage au plus proche), **Pixels lisses** (bilinéaire), **Scanlines** (lignes de balayage type CRT) et **CRT** (scanlines + masque d'ouverture RGB). Le letterbox 4:3 est fait dans le shader (barres noires). Repli automatique sur GDI+ si Direct3D est indisponible. Le compilateur HLSL s'appuie sur d3dcompiler_47.dll (fourni avec Windows)
 - **1.22** — mode **plein écran** : F11 pour entrer/sortir, Échap pour sortir, ou menu View → « Plein écran ». Cache la barre de menu, la barre d'état et la bordure de fenêtre, et couvre tout l'écran ; l'image reste en 4:3 (bandes latérales sur un écran 16:9). Retour à la fenêtre précédente en re-basculant
 - **1.21** — la fenêtre respecte désormais le **4:3** de la console d'origine. Sur une vraie PC Engine, l'image s'affiche en 4:3 sur la TV quelle que soit la résolution interne (256, 320, 344, 352… de large = pixels non carrés) ; le rendu conservait l'aspect des pixels internes, donc le rapport variait selon le jeu. Désormais : image toujours mise à l'échelle en 4:3 (bandes latérales ou haut/bas si besoin), fenêtre en 4:3 par défaut (640×480) et **verrouillée en 4:3 au redimensionnement**, préréglages de taille 1x/2x/3x en 4:3 (320×240, 640×480, 960×720). Option « Aspect 4:3 » dans le menu View pour revenir à l'aspect des pixels internes
 - **1.20** — bruitages échantillonnés (ADPCM) : le mauvais sample était joué (ex. Baby Jo — les pleurs du bébé). Le registre de contrôle ADPCM `$180D` définit l'adresse de LECTURE du sample via son bit 3 (D3, depuis le latch d'adresse $1808/$1809) ; mon code l'ignorait et lisait TOUJOURS à l'offset 0 → tous les samples d'un même banc DMA jouaient le premier. Réécriture fidèle au matériel (source Mednafen pcecd.cpp) : adresse de lecture (D3) et d'écriture (D1) sur front, longueur en compteur décroissant (D4), lecture/arrêt sur D5, demi-octet HAUT en premier, arrêt en fin si D6. Vérifié : Baby Jo joue enfin des samples à des adresses distinctes (6597, 40258…) au lieu de 0 ; Addams Family (qui n'utilise que l'offset 0) intact, audio ADPCM lisse
@@ -230,6 +232,6 @@ Projet d'apprentissage. Libre de modification pour usage personnel.
 
 ---
 
-**Version** : 1.22 (août 2026) — mode plein écran (F11 / Échap / menu View)  
+**Version** : 1.24 (août 2026) — affichage Direct3D 11 (correctif du cisaillement de l'image)  
 **Langage** : VB.NET (.NET 8)  
 **Plateforme** : Windows (WinForms + GDI+)
