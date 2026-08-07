@@ -141,6 +141,13 @@ Public Class Vdc
                     readBuffer = vram(regs(R_MARR) And &H7FFF)
                 ElseIf regSelect = R_BYR Then
                     byrWritten = True
+                ElseIf regSelect = R_DCR Then
+                    ' L'auto-répétition SATB (bit4) doit s'armer dès l'écriture du
+                    ' registre, pas seulement après un premier transfert : sinon un
+                    ' jeu qui active ce bit sans réémettre DVSSR (source déjà bonne
+                    ' depuis un transfert précédent) attend une IRQ SATB qui ne
+                    ' viendra jamais (aucun transfert n'a de raison de se déclencher).
+                    satbAuto = (regs(R_DCR) And &H10) <> 0
                 End If
         End Select
     End Sub
@@ -148,9 +155,16 @@ Public Class Vdc
     Private Sub HandleMSB(value As Integer)
         Select Case regSelect
             Case R_VRW
-                ' Écriture word en VRAM à MAWR
-                Dim addr = regs(R_MAWR) And &H7FFF
-                vram(addr) = writeLatch Or (value << 8)
+                ' Écriture word en VRAM à MAWR.
+                ' Le HuC6270 n'adresse que 32K mots ($0000-$7FFF) : si MAWR déborde
+                ' au-delà de $7FFF, l'écriture est ignorée (VRAM inexistante), PAS
+                ' repliée sur $0000. Certains jeux effacent volontairement un bloc
+                ' sur-dimensionné en partant d'une adresse haute (ex. Turrican :
+                ' clear de 16384 mots depuis $4400) en comptant sur ce rejet ; le
+                ' repli écrasait la BAT en $0000 et donnait un écran noir à l'intro.
+                If regs(R_MAWR) < &H8000 Then
+                    vram(regs(R_MAWR)) = writeLatch Or (value << 8)
+                End If
                 regs(R_MAWR) = (regs(R_MAWR) + AddrInc()) And &HFFFF
             Case R_LENR
                 regs(R_LENR) = (regs(R_LENR) And &HFF) Or (value << 8)
@@ -164,6 +178,8 @@ Public Class Vdc
                     readBuffer = vram(regs(R_MARR) And &H7FFF)
                 ElseIf regSelect = R_BYR Then
                     byrWritten = True
+                ElseIf regSelect = R_DCR Then
+                    satbAuto = (regs(R_DCR) And &H10) <> 0
                 End If
         End Select
     End Sub

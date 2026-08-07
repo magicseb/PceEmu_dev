@@ -10,6 +10,12 @@ Public Class MainForm
     Private renderer As IEmuRenderer
     Private usingD3D As Boolean = False
     Private currentShader As PceShader = PceShader.SharpPixels
+    Private currentScale As Integer = 2
+    Private gamepadMenu As GamepadMenuForm
+    Private menuOpen As Boolean = False
+    Private prevPausedBeforeMenu As Boolean = False
+    Private lastMenu As GamepadInput.MenuState
+    Private ReadOnly menuHeld As New System.Collections.Generic.Dictionary(Of String, Integer)
     Private shaderSharpItem, shaderSmoothItem, shaderScanItem, shaderCrtItem As System.Windows.Forms.ToolStripMenuItem
     Private audioOut As AudioOut
     Private ReadOnly config As Settings = Settings.Load()
@@ -162,9 +168,9 @@ Public Class MainForm
     ''' <summary>Ouvre une ROM</summary>
     Private Sub MenuOpenROM(sender As Object, e As EventArgs)
         Dim openFileDialog = New System.Windows.Forms.OpenFileDialog()
-        openFileDialog.Filter = "Jeux PC Engine (*.pce;*.sgx;*.zip;*.7z;*.cue;*.ccd)|*.pce;*.sgx;*.zip;*.7z;*.cue;*.ccd|" &
+        openFileDialog.Filter = "Jeux PC Engine (*.pce;*.sgx;*.zip;*.7z;*.cue;*.ccd;*.chd)|*.pce;*.sgx;*.zip;*.7z;*.cue;*.ccd;*.chd|" &
                                 "ROMs HuCard (*.pce;*.sgx)|*.pce;*.sgx|" &
-                                "Jeux CD-ROM² (*.cue;*.ccd)|*.cue;*.ccd|" &
+                                "Jeux CD-ROM² (*.cue;*.ccd;*.chd)|*.cue;*.ccd;*.chd|" &
                                 "Archives (*.zip;*.7z)|*.zip;*.7z|" &
                                 "Tous les fichiers (*.*)|*.*"
         openFileDialog.Title = "Ouvrir une ROM PC Engine"
@@ -177,7 +183,7 @@ Public Class MainForm
     ''' <summary>Vrai si le chemin désigne une image CD-ROM² (.cue/.ccd/.img).</summary>
     Private Shared Function IsCdImage(path As String) As Boolean
         Dim ext = System.IO.Path.GetExtension(path).ToLowerInvariant()
-        Return ext = ".cue" OrElse ext = ".ccd" OrElse ext = ".img"
+        Return ext = ".cue" OrElse ext = ".ccd" OrElse ext = ".img" OrElse ext = ".chd"
     End Function
 
     ''' <summary>
@@ -306,9 +312,17 @@ Public Class MainForm
                 fps += 1
             End If
 
-            ' Manette : lue à chaque frame, fusionnée avec le clavier
+            ' Manette : lecture + menu rapide en surimpression (ouvert par LB+RT)
             If config.GamepadEnabled Then
-                inputManager.ApplyGamepad(gamepad.Poll())
+                Dim pad = gamepad.Poll()          ' rafraîchit aussi l'état brut du menu
+                Dim mb = gamepad.ReadMenu()
+                If mb.Toggle AndAlso Not lastMenu.Toggle Then Me.BeginInvoke(New Action(AddressOf ToggleGamepadMenu))
+                If menuOpen Then
+                    DispatchMenuNav(mb)
+                Else
+                    inputManager.ApplyGamepad(pad)
+                End If
+                lastMenu = mb
             End If
 
             ' Commandes de l'émulateur
@@ -408,6 +422,7 @@ Public Class MainForm
 
     ''' <summary>Dimensionne la fenêtre pour un panneau de rendu de largeur donnée en 4:3.</summary>
     Private Sub SetPanel43(width As Integer)
+        currentScale = Math.Max(1, Math.Min(3, width \ 320))
         Dim chromeH = menuStripMain.Height + statusLabel.Height
         Me.ClientSize = New System.Drawing.Size(width, CInt(width * 3 / 4) + chromeH)
     End Sub
@@ -436,14 +451,225 @@ Public Class MainForm
     End Sub
 
     Private Sub MenuShaderSelect(sender As Object, e As EventArgs)
-        Dim item = CType(sender, System.Windows.Forms.ToolStripMenuItem)
-        currentShader = CType(item.Tag, PceShader)
-        For Each it In {shaderSharpItem, shaderSmoothItem, shaderScanItem, shaderCrtItem}
-            it.Checked = (it Is item)
-        Next
-        If renderer IsNot Nothing Then renderer.Shader = currentShader
+        SetShader(CType(CType(sender, System.Windows.Forms.ToolStripMenuItem).Tag, PceShader))
         If Not usingD3D Then ShowStatus("Note : les filtres nécessitent Direct3D (repli GDI+ actif)")
     End Sub
+
+    ''' <summary>Applique un shader et synchronise les coches du menu (appelé par le menu et l'overlay manette).</summary>
+    Private Sub SetShader(s As PceShader)
+        currentShader = s
+        If renderer IsNot Nothing Then renderer.Shader = s
+        shaderSharpItem.Checked = (s = PceShader.SharpPixels)
+        shaderSmoothItem.Checked = (s = PceShader.SmoothPixels)
+        shaderScanItem.Checked = (s = PceShader.Scanlines)
+        shaderCrtItem.Checked = (s = PceShader.Crt)
+    End Sub
+
+    ' ===== Menu rapide manette (overlay ouvert par LB+RT) =====
+
+    Private Sub ToggleGamepadMenu()
+        If menuOpen Then CloseGamepadMenu() Else OpenGamepadMenu()
+    End Sub
+
+    Private Sub OpenGamepadMenu()
+        If pceSystem Is Nothing Then Return   ' rien à configurer sans jeu chargé
+        If gamepadMenu Is Nothing OrElse gamepadMenu.IsDisposed Then gamepadMenu = New GamepadMenuForm(Me)
+        prevPausedBeforeMenu = isPaused
+        isPaused = True
+        menuOpen = True
+        menuHeld.Clear()
+        gamepadMenu.ResetToRoot()
+        PositionGamepadMenu()
+        gamepadMenu.Show(Me)
+        gamepadMenu.Invalidate()
+    End Sub
+
+    Friend Sub CloseGamepadMenu()
+        menuOpen = False
+        isPaused = prevPausedBeforeMenu
+        menuHeld.Clear()
+        If gamepadMenu IsNot Nothing AndAlso Not gamepadMenu.IsDisposed Then gamepadMenu.Hide()
+        Me.Activate()
+    End Sub
+
+    ''' <summary>Cale l'overlay sur la zone de rendu (à l'ouverture et après un changement de taille/plein écran).</summary>
+    Friend Sub PositionGamepadMenu()
+        If gamepadMenu Is Nothing OrElse gamepadMenu.IsDisposed Then Return
+        gamepadMenu.Bounds = renderPanel.RectangleToScreen(renderPanel.ClientRectangle)
+    End Sub
+
+    ' --- actions déclenchées par l'overlay (thread UI) ---
+    Friend Sub RequestSaveState()
+        DoSaveState() : CloseGamepadMenu()
+    End Sub
+    Friend Sub RequestLoadState()
+        DoLoadState() : CloseGamepadMenu()
+    End Sub
+    Friend Sub RequestReset()
+        If pceSystem IsNot Nothing Then
+            SyncLock emulationLock : pceSystem.Reset() : End SyncLock
+        End If
+        CloseGamepadMenu()
+    End Sub
+    Friend Sub RequestQuit()
+        CloseGamepadMenu() : Me.Close()
+    End Sub
+    Friend Sub MenuLoadRom(path As String)
+        CloseGamepadMenu()
+        LoadROM(path)
+    End Sub
+    Friend Function MenuRomList() As System.Collections.Generic.List(Of String)
+        Dim list As New System.Collections.Generic.List(Of String)
+        Try
+            Dim folder = config.GamesFolder
+            If System.IO.Directory.Exists(folder) Then
+                For Each f In System.IO.Directory.EnumerateFiles(folder, "*.*", System.IO.SearchOption.AllDirectories)
+                    If RomArchive.IsSupported(f) Then list.Add(f)
+                Next
+                list.Sort(StringComparer.CurrentCultureIgnoreCase)
+            End If
+        Catch
+        End Try
+        Return list
+    End Function
+
+    ' --- téléchargement archive.org, accessible aussi depuis le menu manette ---
+    Private archiveDownloadCancel As Boolean
+
+    Friend Function MenuArchiveSources() As System.Collections.Generic.List(Of ArchiveSource)
+        Return config.GetArchiveSources()
+    End Function
+
+    ''' <summary>Liste en tâche de fond les fichiers d'une source, déjà filtrés des jeux
+    ''' déjà présents dans le dossier games. callback est rappelé sur le thread UI.</summary>
+    Friend Sub MenuFetchArchiveFiles(item As String,
+                                      callback As Action(Of System.Collections.Generic.List(Of String), String))
+        Dim folder = config.GamesFolder
+        System.Threading.ThreadPool.QueueUserWorkItem(
+            Sub()
+                Try
+                    Dim names = ArchiveOrgClient.FetchFileNames(item)
+                    Dim owned = ArchiveOrgClient.OwnedBaseNames(folder)
+                    Dim shown As New System.Collections.Generic.List(Of String)
+                    For Each n In names
+                        If Not owned.Contains(System.IO.Path.GetFileNameWithoutExtension(n)) Then shown.Add(n)
+                    Next
+                    Me.BeginInvoke(New Action(Sub() callback(shown, Nothing)))
+                Catch ex As Exception
+                    Me.BeginInvoke(New Action(Sub() callback(Nothing, ex.Message)))
+                End Try
+            End Sub)
+    End Sub
+
+    ''' <summary>Télécharge un fichier d'une source vers le dossier games en tâche de fond.
+    ''' progress/done sont rappelés sur le thread UI.</summary>
+    Friend Sub MenuDownloadArchiveFile(item As String, name As String,
+                                        progress As Action(Of String),
+                                        done As Action(Of String, String))
+        If String.IsNullOrEmpty(config.GamesFolder) Then
+            done(Nothing, "Aucun dossier de jeux configuré.")
+            Return
+        End If
+        Try
+            System.IO.Directory.CreateDirectory(config.GamesFolder)
+        Catch
+        End Try
+        archiveDownloadCancel = False
+        Dim localName = ArchiveOrgClient.SafeLocalName(name)
+        Dim destPath = System.IO.Path.Combine(config.GamesFolder, localName)
+        System.Threading.ThreadPool.QueueUserWorkItem(
+            Sub()
+                Try
+                    ArchiveOrgClient.DownloadItemFile(item, name, destPath,
+                        Sub(msg) Me.BeginInvoke(New Action(Sub() progress(msg))),
+                        Function() archiveDownloadCancel)
+                    Me.BeginInvoke(New Action(Sub() done(destPath, Nothing)))
+                Catch ex As OperationCanceledException
+                    Me.BeginInvoke(New Action(Sub() done(Nothing, "Annulé.")))
+                Catch ex As Exception
+                    Me.BeginInvoke(New Action(Sub() done(Nothing, ex.Message)))
+                End Try
+            End Sub)
+    End Sub
+
+    Friend Sub MenuCancelArchiveDownload()
+        archiveDownloadCancel = True
+    End Sub
+
+    ' --- réglages lus/écrits par l'overlay ---
+    Friend ReadOnly Property MenuShaderLabel As String
+        Get
+            Select Case currentShader
+                Case PceShader.SmoothPixels : Return "Pixels lisses"
+                Case PceShader.Scanlines : Return "Scanlines"
+                Case PceShader.Crt : Return "CRT"
+                Case Else : Return "Pixels nets"
+            End Select
+        End Get
+    End Property
+    Friend Sub MenuCycleShader(dir As Integer)
+        SetShader(CType((CInt(currentShader) + dir + 4) Mod 4, PceShader))
+    End Sub
+    Friend ReadOnly Property MenuAspectOn As Boolean
+        Get
+            Return lockAspect43
+        End Get
+    End Property
+    Friend Sub MenuToggleAspect()
+        aspect43MenuItem.Checked = Not aspect43MenuItem.Checked
+        MenuToggleAspect43(Nothing, Nothing)
+        PositionGamepadMenu()
+    End Sub
+    Friend ReadOnly Property MenuFullscreenOn As Boolean
+        Get
+            Return isFullscreen
+        End Get
+    End Property
+    Friend Sub MenuToggleFullscreenFromPad()
+        ToggleFullscreen()
+        PositionGamepadMenu()
+    End Sub
+    Friend ReadOnly Property MenuScaleValue As Integer
+        Get
+            Return currentScale
+        End Get
+    End Property
+    Friend Sub MenuCycleScale(dir As Integer)
+        If isFullscreen Then Return
+        SetPanel43(Math.Max(1, Math.Min(3, currentScale + dir)) * 320)
+        PositionGamepadMenu()
+    End Sub
+
+    ' --- routage de la navigation (thread d'émulation → thread UI) ---
+    Private Sub DispatchMenuNav(mb As GamepadInput.MenuState)
+        If gamepadMenu Is Nothing OrElse gamepadMenu.IsDisposed Then Return
+        If MenuRepeat("up", mb.Up) Then Me.BeginInvoke(New Action(Sub() gamepadMenu.NavUp()))
+        If MenuRepeat("down", mb.Down) Then Me.BeginInvoke(New Action(Sub() gamepadMenu.NavDown()))
+        If mb.Left AndAlso Not lastMenu.Left Then Me.BeginInvoke(New Action(Sub() gamepadMenu.NavLeft()))
+        If mb.Right AndAlso Not lastMenu.Right Then Me.BeginInvoke(New Action(Sub() gamepadMenu.NavRight()))
+        If mb.Accept AndAlso Not lastMenu.Accept Then Me.BeginInvoke(New Action(Sub() gamepadMenu.Accept()))
+        If mb.Back AndAlso Not lastMenu.Back Then Me.BeginInvoke(New Action(Sub() gamepadMenu.Back()))
+        If mb.Check AndAlso Not lastMenu.Check Then Me.BeginInvoke(New Action(Sub() gamepadMenu.ToggleCheck()))
+        If mb.Batch AndAlso Not lastMenu.Batch Then Me.BeginInvoke(New Action(Sub() gamepadMenu.StartBatch()))
+    End Sub
+
+    ''' <summary>Front à la première pression, puis répétition automatique (maintien).</summary>
+    Private Function MenuRepeat(key As String, pressed As Boolean) As Boolean
+        Dim held = If(menuHeld.ContainsKey(key), menuHeld(key), 0)
+        Dim fire = False
+        If pressed Then
+            If held = 0 Then
+                fire = True
+            ElseIf held >= 18 AndAlso ((held - 18) Mod 4) = 0 Then
+                fire = True
+            End If
+            held += 1
+        Else
+            held = 0
+        End If
+        menuHeld(key) = held
+        Return fire
+    End Function
 
     ''' <summary>Bascule plein écran : cache menu/barre d'état et bordure, couvre l'écran.
     ''' L'image reste en 4:3 (letterbox) via le rendu. F11 bascule, Échap sort.</summary>
@@ -665,6 +891,9 @@ Public Class MainForm
 
     ''' <summary>Gestion des touches</summary>
     Protected Overrides Sub OnKeyDown(e As System.Windows.Forms.KeyEventArgs)
+        If e.KeyCode = System.Windows.Forms.Keys.Escape AndAlso menuOpen Then
+            CloseGamepadMenu() : e.Handled = True : Return
+        End If
         If e.KeyCode = System.Windows.Forms.Keys.F11 Then
             ToggleFullscreen() : e.Handled = True : Return
         ElseIf e.KeyCode = System.Windows.Forms.Keys.Escape AndAlso isFullscreen Then
@@ -683,6 +912,7 @@ Public Class MainForm
     Protected Overrides Sub OnFormClosing(e As System.Windows.Forms.FormClosingEventArgs)
         StopEmulationTask()
         FlushBram()
+        If gamepadMenu IsNot Nothing AndAlso Not gamepadMenu.IsDisposed Then gamepadMenu.Dispose()
         If renderer IsNot Nothing Then renderer.Dispose()
         If audioOut IsNot Nothing Then audioOut.Dispose()
         MyBase.OnFormClosing(e)

@@ -48,7 +48,7 @@ Public NotInheritable Class ArchiveOrgForm
     Private ReadOnly _addSrcBtn As New Button()
     Private ReadOnly _delSrcBtn As New Button()
     Private ReadOnly _filter As New TextBox()
-    Private ReadOnly _list As New ListBox()
+    Private ReadOnly _list As New CheckedListBox()
     Private ReadOnly _downloadBtn As New Button()
     Private ReadOnly _cancelBtn As New Button()
     Private ReadOnly _statusLbl As New Label()
@@ -104,11 +104,12 @@ Public NotInheritable Class ArchiveOrgForm
         _list.BackColor = Color.FromArgb(34, 34, 44)
         _list.ForeColor = Color.White
         _list.IntegralHeight = False
+        _list.CheckOnClick = True
         _list.Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         AddHandler _list.DoubleClick, Sub(s, e) DoDownload()
 
         _downloadBtn.SetBounds(12, 476, 200, 32)
-        _downloadBtn.Text = "Télécharger et installer"
+        _downloadBtn.Text = "Télécharger la sélection"
         _downloadBtn.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left
         AddHandler _downloadBtn.Click, Sub(s, e) DoDownload()
 
@@ -180,11 +181,12 @@ Public NotInheritable Class ArchiveOrgForm
         _curItem = _sources(idx).Item
         _list.Items.Clear()
         _allFiles = New List(Of String)()
+        _ownedNames = Nothing   ' relire le dossier games (ex. après un téléchargement)
 
         If _cache.ContainsKey(_curItem) Then
             _allFiles = _cache(_curItem)
             ApplyFilter()
-            SetStatus($"{_allFiles.Count} fichiers. Filtrez puis double-cliquez pour installer.")
+            SetStatus(ListStatus())
             Return
         End If
 
@@ -217,8 +219,10 @@ Public NotInheritable Class ArchiveOrgForm
                                                ApplyFilter()
                                                If names.Count = 0 Then
                                                    SetStatus("Aucun fichier compatible (.pce/.sgx/.bin/.zip/.7z) dans cet item.")
+                                               ElseIf _shown.Count = 0 Then
+                                                   SetStatus($"Les {names.Count} jeux compatibles sont déjà présents dans le dossier games.")
                                                Else
-                                                   SetStatus($"{names.Count} fichiers. Filtrez puis double-cliquez pour installer.")
+                                                   SetStatus(ListStatus())
                                                End If
                                            End Sub))
                 Catch ex As Exception
@@ -228,10 +232,17 @@ Public NotInheritable Class ArchiveOrgForm
     End Sub
 
     Private Sub ApplyFilter()
+        EnsureOwnedNames()
         Dim q = _filter.Text.Trim().ToLowerInvariant()
-        _shown = If(q = "",
-                    _allFiles,
-                    _allFiles.Where(Function(n) n.ToLowerInvariant().Contains(q)).ToList())
+        Dim afterText = If(q = "",
+                           _allFiles,
+                           _allFiles.Where(Function(n) n.ToLowerInvariant().Contains(q)).ToList())
+        ' On retire les jeux déjà présents dans le dossier games, pour ne pas les
+        ' re-télécharger. Comparaison par nom de base, insensible à la casse : un
+        ' « Jeu.zip » du serveur est masqué même si on n'a localement que « Jeu.pce ».
+        _shown = afterText.Where(
+            Function(n) Not _ownedNames.Contains(Path.GetFileNameWithoutExtension(n))).ToList()
+        _hiddenOwned = afterText.Count - _shown.Count
         _list.BeginUpdate()
         _list.Items.Clear()
         For Each n In _shown
@@ -241,10 +252,45 @@ Public NotInheritable Class ArchiveOrgForm
         If _shown.Count > 0 Then _list.SelectedIndex = 0
     End Sub
 
+    ''' <summary>Noms de base (sans extension) des fichiers déjà présents dans le dossier
+    ''' games, insensible à la casse. Construit paresseusement et réutilisé.</summary>
+    Private _ownedNames As HashSet(Of String)
+    Private _hiddenOwned As Integer
+
+    Private Sub EnsureOwnedNames()
+        If _ownedNames IsNot Nothing Then Return
+        _ownedNames = New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim folder = _config.GamesFolder
+        If String.IsNullOrEmpty(folder) OrElse Not Directory.Exists(folder) Then Return
+        Try
+            For Each f In Directory.EnumerateFiles(folder)
+                ' seuls les vrais fichiers de jeu comptent (on ignore save-states, configs, etc.)
+                If RomArchive.IsSupported(f) Then _ownedNames.Add(Path.GetFileNameWithoutExtension(f))
+            Next
+        Catch
+            ' dossier illisible : on n'exclut rien plutôt que d'échouer
+        End Try
+    End Sub
+
+    ''' <summary>Texte de statut pour la liste courante (mentionne les jeux déjà présents masqués).</summary>
+    Private Function ListStatus() As String
+        If _hiddenOwned > 0 Then
+            Return $"{_shown.Count} fichiers ({_hiddenOwned} déjà présents masqués). Cochez-en plusieurs ou double-cliquez pour un seul."
+        End If
+        Return $"{_shown.Count} fichiers. Cochez-en plusieurs, ou double-cliquez pour n'en installer qu'un."
+    End Function
+
     Private Sub DoDownload()
         If _busy Then Return
-        Dim i = _list.SelectedIndex
-        If i < 0 OrElse i >= _shown.Count Then Return
+        Dim targets As New List(Of Integer)()
+        For Each idx As Integer In _list.CheckedIndices
+            targets.Add(idx)
+        Next
+        If targets.Count = 0 Then
+            Dim i = _list.SelectedIndex
+            If i < 0 OrElse i >= _shown.Count Then Return
+            targets.Add(i)
+        End If
         If String.IsNullOrEmpty(_config.GamesFolder) Then
             SetStatus("Aucun dossier de jeux configuré.")
             Return
@@ -255,40 +301,55 @@ Public NotInheritable Class ArchiveOrgForm
         End Try
 
         Dim item = _curItem
-        Dim name = _shown(i)                     ' nom complet dans l'item (peut contenir des « / »)
-        Dim localName = SafeLocalName(name)      ' nom de fichier seul, assaini
+        Dim names As New List(Of String)()
+        For Each idx In targets
+            names.Add(_shown(idx))
+        Next
         SetBusy(True)
-        SetStatus("Téléchargement de " & localName & "…")
 
         ThreadPool.QueueUserWorkItem(
             Sub()
-                Dim destPath = Path.Combine(_config.GamesFolder, localName)
-                Dim partPath = destPath & ".part"
-                Try
-                    Dim url = "https://archive.org/download/" & Uri.EscapeDataString(item) & "/" & EscapePath(name)
-                    DownloadToFile(url, partPath)
-
-                    If _cancel Then
+                Dim total = names.Count
+                Dim ok = 0
+                Dim lastPath As String = Nothing
+                For i = 0 To names.Count - 1
+                    If _cancel Then Exit For
+                    Dim name = names(i)
+                    Dim localName = SafeLocalName(name)
+                    SetStatus($"[{i + 1}/{total}] Téléchargement de {localName}…")
+                    Dim destPath = Path.Combine(_config.GamesFolder, localName)
+                    Dim partPath = destPath & ".part"
+                    Try
+                        Dim url = "https://archive.org/download/" & Uri.EscapeDataString(item) & "/" & EscapePath(name)
+                        DownloadToFile(url, partPath)
+                        If _cancel Then
+                            TryDelete(partPath)
+                            Exit For
+                        End If
+                        If File.Exists(destPath) Then File.Delete(destPath)
+                        File.Move(partPath, destPath)
+                        lastPath = destPath
+                        ok += 1
+                    Catch ex As Exception
                         TryDelete(partPath)
-                        SetStatus("Annulé.")
-                        BeginInvoke(New Action(Sub() SetBusy(False)))
-                        Return
-                    End If
-
-                    If File.Exists(destPath) Then File.Delete(destPath)
-                    File.Move(partPath, destPath)
-                    LastDownloaded = destPath
-
-                    BeginInvoke(New Action(Sub()
-                                               SetBusy(False)
-                                               SetStatus("Installé : " & Path.GetFileName(destPath))
-                                               DialogResult = DialogResult.OK
-                                           End Sub))
-                Catch ex As Exception
-                    TryDelete(partPath)
-                    SetStatus("Échec : " & ex.Message)
-                    BeginInvoke(New Action(Sub() SetBusy(False)))
-                End Try
+                        SetStatus($"[{i + 1}/{total}] Échec ({localName}) : {ex.Message}")
+                    End Try
+                Next
+                LastDownloaded = lastPath
+                Dim cancelled = _cancel
+                BeginInvoke(New Action(Sub()
+                                           SetBusy(False)
+                                           _ownedNames = Nothing   ' relire le dossier games : masquer les jeux désormais installés
+                                           ApplyFilter()
+                                           If cancelled Then
+                                               SetStatus($"Annulé — {ok}/{total} installés.")
+                                           ElseIf total = 1 Then
+                                               SetStatus("Installé : " & Path.GetFileName(lastPath))
+                                           Else
+                                               SetStatus($"{ok}/{total} jeux installés.")
+                                           End If
+                                           If ok > 0 Then DialogResult = DialogResult.OK
+                                       End Sub))
             End Sub)
     End Sub
 

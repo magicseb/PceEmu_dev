@@ -590,7 +590,7 @@ Public Class Cpu6280
             ' --- Flags ---
             Case &H18 : SetFlag(FLAG_C, False) : Return 2
             Case &H38 : SetFlag(FLAG_C, True) : Return 2
-            Case &H58 : SetFlag(FLAG_I, False) : Return 2
+            Case &H58 : SetFlag(FLAG_I, False) : mpu.IrqEnableDelay = True : Return 2
             Case &H78 : SetFlag(FLAG_I, True) : Return 2
             Case &HB8 : SetFlag(FLAG_V, False) : Return 2
             Case &HD8 : SetFlag(FLAG_D, False) : Return 2

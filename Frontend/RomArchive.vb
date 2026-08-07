@@ -9,7 +9,7 @@
 Public Class RomArchive
 
     ''' <summary>Extensions reconnues comme des ROMs PC Engine.</summary>
-    Private Shared ReadOnly RomExtensions As String() = {".pce", ".sgx", ".bin"}
+    Private Shared ReadOnly RomExtensions As String() = {".pce", ".sgx", ".bin", ".cue", ".ccd", ".chd"}
 
     ''' <summary>
     ''' Garde-fou contre les archives piégées : aucune HuCard ne dépasse 2,5 Mo,

@@ -20,10 +20,12 @@ Public Class CdImage
         Public TrackStartLba As Integer  ' LBA absolu de l'INDEX 01 (début « officiel » de la piste)
         Public RangeStart As Integer     ' plage LBA couverte par cette piste (pour la recherche)
         Public RangeEnd As Integer
+        Public ChdPhysBase As Integer    ' frame physique CHD du début de fichier (images .chd)
     End Structure
 
     Private ReadOnly entries As New System.Collections.Generic.List(Of Entry)
     Private ReadOnly streams As New System.Collections.Generic.Dictionary(Of String, System.IO.FileStream)
+    Private chd As ChdReader     ' non-Nothing pour une image .chd
 
     Public ReadOnly Property TotalSectors As Integer
     Public ReadOnly Property FirstTrack As Integer
@@ -57,7 +59,10 @@ Public Class CdImage
         Dim ext = System.IO.Path.GetExtension(path).ToLowerInvariant()
         Dim curLba = 0
 
-        If ext = ".cue" Then
+        If ext = ".chd" Then
+            ' --- image CHD compressée (MAME) : pistes issues des métadonnées CD ---
+            curLba = LoadChd(path)
+        ElseIf ext = ".cue" Then
             ' --- Parse d'un .cue : mono-fichier multi-pistes (un .img, INDEX absolus)
             '     OU multi-fichiers (un .bin par piste, LBA cumulés). Une entrée PAR PISTE. ---
             Dim curFile As String = Nothing
@@ -148,6 +153,33 @@ Public Class CdImage
             .TrackStartLba = fileBaseLba + index01})
     End Sub
 
+    ''' <summary>Construit les entrées de pistes depuis une image CHD. Renvoie le lead-out (LBA total).</summary>
+    Private Function LoadChd(path As String) As Integer
+        chd = New ChdReader(path)
+        For Each t In chd.Tracks
+            Dim uo = 0
+            If Not t.IsAudio Then
+                If t.Type.StartsWith("MODE2") Then uo = 24 Else uo = 16   ' MODE1/MODE1_RAW → 16
+            End If
+            entries.Add(New Entry With {
+                .FilePath = Nothing, .SectorSize = 2352, .UserOffset = uo, .IsAudio = t.IsAudio,
+                .Number = t.Number, .FileStartLba = t.StartLba, .FileSectors = t.Frames,
+                .TrackStartLba = t.StartLba + t.Pregap, .ChdPhysBase = t.PhysFrame})
+        Next
+        If chd.Tracks.Count = 0 Then Return 0
+        Dim last = chd.Tracks(chd.Tracks.Count - 1)
+        Return last.StartLba + last.Frames
+    End Function
+
+    ''' <summary>Piste dont les frames stockées contiennent le LBA (base fichier), pour une image .chd.</summary>
+    Private Function ChdEntryForLba(absLba As Integer) As Integer
+        For i = 0 To entries.Count - 1
+            Dim e = entries(i)
+            If absLba >= e.FileStartLba AndAlso absLba < e.FileStartLba + e.FileSectors Then Return i
+        Next
+        Return -1
+    End Function
+
     Private Shared Function ResolveFile(fileName As String, dir As String) As String
         If fileName Is Nothing Then Return Nothing
         Dim p = System.IO.Path.Combine(dir, fileName)
@@ -190,6 +222,15 @@ Public Class CdImage
     ''' <summary>2048 octets de données utilisateur du secteur LBA absolu.</summary>
     Public Function ReadUserData(absLba As Integer) As Byte()
         Dim result(2047) As Byte
+        If chd IsNot Nothing Then
+            Dim ci = ChdEntryForLba(absLba)
+            If ci < 0 Then Return result
+            Dim ce = entries(ci)
+            Dim sec = chd.ReadPhysFrame(ce.ChdPhysBase + (absLba - ce.FileStartLba))
+            Dim nUser = Math.Min(2048, 2352 - ce.UserOffset)
+            Array.Copy(sec, ce.UserOffset, result, 0, nUser)
+            Return result
+        End If
         Dim i = EntryForLba(absLba)
         If i < 0 Then Return result
         Dim e = entries(i)
@@ -209,6 +250,19 @@ Public Class CdImage
 
     ''' <summary>Secteur audio brut (2352 octets) — pour le CD-DA (à venir).</summary>
     Public Function ReadRaw(absLba As Integer) As Byte()
+        If chd IsNot Nothing Then
+            Dim ci = ChdEntryForLba(absLba)
+            If ci < 0 Then Return New Byte(2351) {}
+            Dim ce = entries(ci)
+            Dim sec = chd.ReadPhysFrame(ce.ChdPhysBase + (absLba - ce.FileStartLba))
+            ' l'audio CD est stocké en big-endian dans le CHD → repasser en little-endian (comme un .bin)
+            If ce.IsAudio Then
+                For j = 0 To sec.Length - 2 Step 2
+                    Dim t = sec(j) : sec(j) = sec(j + 1) : sec(j + 1) = t
+                Next
+            End If
+            Return sec
+        End If
         Dim i = EntryForLba(absLba)
         If i < 0 Then Return New Byte(2351) {}
         Dim e = entries(i)

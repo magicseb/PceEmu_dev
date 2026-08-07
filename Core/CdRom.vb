@@ -129,7 +129,13 @@ Public Class CdRom
                 Return adpcmControl
             Case &H8        ' lecture de données avec auto-ACK (transfert en masse)
                 Dim v = dataBusIn And &HFF
-                AutoAck()
+                ' L'auto-ACK ne fait avancer le transfert qu'en phase DataIn (IO=1, CD=0).
+                ' En Status/Message (CD=1), lire $1808 renvoie l'octet courant sans avancer :
+                ' évite que la boucle de lecture en masse du BIOS (secteur fixe de 2048 o)
+                ' ne consomme les octets de status/message quand la fin des données tombe
+                ' au milieu du secteur — ce qui empêchait le BIOS de voir la phase Status
+                ' et bloquait certains jeux Arcade CD (ex. Forgotten Worlds) au chargement.
+                If ph = Phase.DataIn Then AutoAck()
                 Return v
             Case Else
                 Return 0

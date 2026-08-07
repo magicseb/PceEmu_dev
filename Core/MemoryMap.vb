@@ -31,6 +31,7 @@ Public Class MemoryMap
     ' CD-ROM² : lecteur SCSI + RAM CD (Super System Card : 256 Ko, banques $68-$87)
     Private cd As CdRom = Nothing
     Private cdRam() As Byte = Nothing
+    Private arcadeCard As ArcadeCard = Nothing
 
     ''' <summary>Compteur de diagnostic (sans effet sur l'émulation).</summary>
 
@@ -83,6 +84,7 @@ Public Class MemoryMap
     Public Sub ConnectCd(cdRef As CdRom)
         cd = cdRef
         cdRam = New Byte(&H3FFFF) {}   ' 256 Ko : banques $68-$87
+        arcadeCard = New ArcadeCard()  ' extension Arcade Card (2 Mo, ports $1A00-$1AFF + banques $40-$43)
     End Sub
 
     ''' <summary>Ligne IRQ2 (CD-ROM², vecteur $FFF6).</summary>
@@ -124,6 +126,9 @@ Public Class MemoryMap
             Return ReadIO(offset)
         ElseIf cdRam IsNot Nothing AndAlso page >= &H68 AndAlso page <= &H87 Then
             Return cdRam(((page - &H68) << 13) Or offset)
+        ElseIf arcadeCard IsNot Nothing AndAlso page >= &H40 AndAlso page <= &H43 Then
+            ' Fenêtre directe de l'Arcade Card : chaque banque vise le port correspondant.
+            Return arcadeCard.PhysRead((page << 13) Or offset)
         ElseIf page < &H80 Then
             ' La cartouche traduit elle-même la page en adresse ROM (miroirs, mapper)
             Return cartridge.ReadRom(page, offset)
@@ -145,6 +150,8 @@ Public Class MemoryMap
             WriteIO(offset, value)
         ElseIf cdRam IsNot Nothing AndAlso page >= &H68 AndAlso page <= &H87 Then
             cdRam(((page - &H68) << 13) Or offset) = CByte(value)
+        ElseIf arcadeCard IsNot Nothing AndAlso page >= &H40 AndAlso page <= &H43 Then
+            arcadeCard.PhysWrite((page << 13) Or offset, value)
         ElseIf page >= &HF8 AndAlso page <= &HFB Then
             workRam(WorkRamIndex(page, offset)) = CByte(value)
         ElseIf page = &HF7 Then
@@ -189,7 +196,10 @@ Public Class MemoryMap
                     Case Else
                         Return 0
                 End Select
-            Case 6  ' $1800-$1BFF : interface CD-ROM² ($1800-$18FF)
+            Case 6  ' $1800-$1BFF : interface CD-ROM² ($1800-$18FF) + Arcade Card ($1A00-$1BFF)
+                If arcadeCard IsNot Nothing AndAlso (offset And &H1E00) = &H1A00 Then
+                    Return arcadeCard.Read(offset)
+                End If
                 If cd IsNot Nothing AndAlso (offset And &HF00) = &H800 Then
                     ' Registres d'identification de la RAM étendue de la Super System Card,
                     ' lus par le BIOS ex_memopen ($FE92) : signature $AA/$55 en $18C1/$18C2 puis
@@ -237,8 +247,10 @@ Public Class MemoryMap
                         ' Acquittement TIMER
                         If TimerRef IsNot Nothing Then TimerRef.AckIrq()
                 End Select
-            Case 6  ' $1800-$1BFF : interface CD-ROM² ($1800-$18FF)
-                If cd IsNot Nothing AndAlso (offset And &HF00) = &H800 Then
+            Case 6  ' $1800-$1BFF : interface CD-ROM² ($1800-$18FF) + Arcade Card ($1A00-$1BFF)
+                If arcadeCard IsNot Nothing AndAlso (offset And &H1E00) = &H1A00 Then
+                    arcadeCard.Write(offset, value)
+                ElseIf cd IsNot Nothing AndAlso (offset And &HF00) = &H800 Then
                     cd.Write(offset And &HF, value)
                 End If
         End Select
@@ -332,6 +344,21 @@ Public Class MemoryMap
         Dim n = r.ReadInt32()
         Dim data = r.ReadBytes(n)
         If cdRam IsNot Nothing AndAlso n > 0 Then Array.Copy(data, cdRam, Math.Min(n, cdRam.Length))
+    End Sub
+
+    ''' <summary>Sauve l'état de l'Arcade Card (bloc CD, format d'état >= 2). Un drapeau
+    ''' indique sa présence pour rester tolérant si la carte n'est pas allouée.</summary>
+    Public Sub SaveArcadeCard(w As System.IO.BinaryWriter)
+        w.Write(arcadeCard IsNot Nothing)
+        If arcadeCard IsNot Nothing Then arcadeCard.SaveState(w)
+    End Sub
+
+    Public Sub LoadArcadeCard(r As System.IO.BinaryReader)
+        Dim present = r.ReadBoolean()
+        If present Then
+            If arcadeCard Is Nothing Then arcadeCard = New ArcadeCard()
+            arcadeCard.LoadState(r)
+        End If
     End Sub
 
 End Class

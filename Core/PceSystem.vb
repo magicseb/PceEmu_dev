@@ -22,7 +22,7 @@ Public Class PceSystem
 
     ' Signature d'une sauvegarde d'état : "PCEST" suivi du numéro de format
     Private Shared ReadOnly STATE_MAGIC As Byte() = {&H50, &H43, &H45, &H53, &H54}
-    Private Const STATE_VERSION As Integer = 1
+    Private Const STATE_VERSION As Integer = 2
 
     ''' <summary>
     ''' BRAM d'une console neuve. Les jeux reconnaissent une mémoire formatée à cet
@@ -267,6 +267,7 @@ Public Class PceSystem
                     If cd IsNot Nothing Then
                         mpu.SaveCdRam(w)
                         cd.SaveState(w)
+                        mpu.SaveArcadeCard(w)   ' Arcade Card (format d'état >= 2)
                     End If
                 End Using
             End Using
@@ -290,7 +291,7 @@ Public Class PceSystem
             Using gz = New System.IO.Compression.GZipStream(fs, System.IO.Compression.CompressionMode.Decompress)
                 Using r = New System.IO.BinaryReader(gz)
                     Dim version = r.ReadInt32()
-                    If version <> STATE_VERSION Then
+                    If version < 1 OrElse version > STATE_VERSION Then
                         Throw New InvalidOperationException("Sauvegarde au format " & version &
                                                             ", incompatible avec le format " & STATE_VERSION & ".")
                     End If
@@ -320,6 +321,7 @@ Public Class PceSystem
                     If cd IsNot Nothing Then
                         mpu.LoadCdRam(r)
                         cd.LoadState(r)
+                        If version >= 2 Then mpu.LoadArcadeCard(r)   ' Arcade Card ajoutée au format 2
                     End If
                 End Using
             End Using

@@ -3,18 +3,15 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>PceEmu</RootNamespace>
-    <AssemblyName>CdRomTests</AssemblyName>
-    <StartupObject>PceEmu.CdRomTest</StartupObject>
+    <AssemblyName>VramWriteWrap</AssemblyName>
+    <StartupObject>PceEmu.VramWriteWrapTest</StartupObject>
     <OptionStrict>Off</OptionStrict>
     <OptionExplicit>On</OptionExplicit>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RemoveIntegerChecks>true</RemoveIntegerChecks>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../Core/CdImage.vb" />
-    <Compile Include="../../Core/Chd.vb" />
-    <Compile Include="../../Core/LzmaCodec.vb" />
-    <Compile Include="../../Core/FlacCodec.vb" />
-    <Compile Include="../../Core/CdRom.vb" />
+    <Compile Include="../../Core/*.vb" />
     <Compile Include="Program.vb" />
   </ItemGroup>
 </Project>
