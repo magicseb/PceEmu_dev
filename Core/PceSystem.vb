@@ -22,7 +22,7 @@ Public Class PceSystem
 
     ' Signature d'une sauvegarde d'état : "PCEST" suivi du numéro de format
     Private Shared ReadOnly STATE_MAGIC As Byte() = {&H50, &H43, &H45, &H53, &H54}
-    Private Const STATE_VERSION As Integer = 2
+    Private Const STATE_VERSION As Integer = 3   ' 3 : ajout du tampon de lecture ADPCM ($180A)
 
     ''' <summary>
     ''' BRAM d'une console neuve. Les jeux reconnaissent une mémoire formatée à cet
@@ -320,7 +320,7 @@ Public Class PceSystem
                     ' Bloc CD : présent seulement si un CD est inséré (jeux CD)
                     If cd IsNot Nothing Then
                         mpu.LoadCdRam(r)
-                        cd.LoadState(r)
+                        cd.LoadState(r, version)
                         If version >= 2 Then mpu.LoadArcadeCard(r)   ' Arcade Card ajoutée au format 2
                     End If
                 End Using

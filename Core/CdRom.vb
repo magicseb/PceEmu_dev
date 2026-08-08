@@ -62,6 +62,7 @@ Public Class CdRom
     Private adpcmRam(&HFFFF) As Byte
     Private adpcmWriteAddr As Integer
     Private adpcmReadAddr As Integer
+    Private adpcmReadBuf As Integer     ' tampon à une lecture de latence du port $180A
     Private adpcmLength As Integer
     Private adpcmDmaCtrl As Integer
     Private adpcmControl As Integer
@@ -115,7 +116,17 @@ Public Class CdRom
                 irqStatus = irqStatus And Not (IRQ_TRANSFER_DONE Or IRQ_TRANSFER_READY)
                 Return v
             Case &HA        ' port de données ADPCM (lecture)
-                Dim v = CInt(adpcmRam(adpcmReadAddr And &HFFFF))
+                ' Le matériel a un tampon à UNE lecture de latence : lire $180A renvoie
+                ' la valeur précédemment tamponnée, puis charge adpcmRam(adpcmReadAddr)
+                ' dans le tampon et incrémente l'adresse. Le BIOS (ad_read) le sait et
+                ' jette les deux premières lectures (l'adresse est armée à latch-1 via
+                ' $180D bit3 avec bit2=0) : la 3e lecture rend mem[latch]. Une lecture
+                ' directe sans tampon décale tout le flux d'un octet — c'était la cause
+                ' des sprites « en fragments » de Forgotten Worlds (étoile près du
+                ' joueur pendant la démo), dont l'animation est relue depuis la RAM
+                ' ADPCM vers la RAM banque $87 puis streamée en VRAM.
+                Dim v = adpcmReadBuf
+                adpcmReadBuf = CInt(adpcmRam(adpcmReadAddr And &HFFFF))
                 adpcmReadAddr = (adpcmReadAddr + 1) And &HFFFF
                 Return v
             Case &HB        ' relecture contrôle DMA ADPCM
@@ -577,9 +588,10 @@ Public Class CdRom
         w.Write(adpcmPredictor) : w.Write(adpcmStepIndex) : w.Write(adpcmHighNibble)
         w.Write(adpcmFrac) : w.Write(adpcmCurByte) : w.Write(adpcmAddrLatch)
         w.Write(BramEnabled)
+        w.Write(adpcmReadBuf)               ' format 3
     End Sub
 
-    Public Sub LoadState(r As System.IO.BinaryReader)
+    Public Sub LoadState(r As System.IO.BinaryReader, version As Integer)
         sBsy = r.ReadBoolean() : sReq = r.ReadBoolean() : sMsg = r.ReadBoolean() : sCd = r.ReadBoolean() : sIo = r.ReadBoolean()
         dataBusIn = r.ReadInt32() : dataBusOut = r.ReadInt32() : ackAsserted = r.ReadBoolean()
         ph = CType(r.ReadInt32(), Phase)
@@ -600,6 +612,7 @@ Public Class CdRom
         adpcmPredictor = r.ReadInt32() : adpcmStepIndex = r.ReadInt32() : adpcmHighNibble = r.ReadBoolean()
         adpcmFrac = r.ReadDouble() : adpcmCurByte = r.ReadInt32() : adpcmAddrLatch = r.ReadInt32()
         BramEnabled = r.ReadBoolean()
+        adpcmReadBuf = If(version >= 3, r.ReadInt32(), 0)
     End Sub
 
 End Class

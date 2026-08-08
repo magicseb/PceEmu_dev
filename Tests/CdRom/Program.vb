@@ -67,6 +67,35 @@ Public Module CdRomTest
         Check("IRQ status : transfert terminé signalé ($20)", (irq1 And &H20) <> 0)
         Check("IRQ status : la lecture de $1803 l'acquitte", (irq2 And &H20) = 0)
 
+        ' 7) Relecture de la RAM ADPCM par le CPU ($180A) — protocole ad_read du BIOS.
+        ' Le matériel a un tampon à UNE lecture de latence : lire $180A renvoie la
+        ' valeur précédemment tamponnée puis charge mem[adresse] et incrémente.
+        ' Le BIOS arme l'adresse de lecture à latch-1 ($180D bit3, bit2=0), fait DEUX
+        ' lectures « à jeter », puis stocke : la 3e lecture doit rendre mem[latch].
+        ' Sans le tampon, tout le flux relu est décalé d'un octet — c'était la cause
+        ' des sprites en fragments de Forgotten Worlds (démo, étoile près du joueur).
+        ' Écrire un motif connu en RAM ADPCM à $4000 : adresse d'écriture = latch (bit1, bit0=1)
+        cd.Write(8, &H0) : cd.Write(9, &H40)     ' latch = $4000
+        cd.Write(&HD, &H3)                       ' front bit1, bit0=1 -> écriture = $4000
+        cd.Write(&HD, &H0)
+        For i = 0 To 7 : cd.Write(&HA, &H10 + i) : Next   ' mem[$4000..$4007] = $10..$17
+        ' Armer la lecture comme le BIOS : latch = $4001, bit3 avec bit2=0 -> adresse = $4000
+        cd.Write(8, &H1) : cd.Write(9, &H40)     ' latch = $4001
+        cd.Write(&HD, &H8)                       ' front bit3, bit2=0 -> lecture = latch-1 = $4000
+        cd.Write(&HD, &H0)
+        Dim dummy1 = cd.Read(&HA)                ' jetée (contenu périmé du tampon)
+        Dim dummy2 = cd.Read(&HA)                ' rend mem[latch-1] = mem[$4000]
+        Check("ADPCM relecture : 2e lecture = mem[latch-1] ($10)", dummy2 = &H10)
+        Check("ADPCM relecture : 3e lecture = mem[latch] ($11)", cd.Read(&HA) = &H11)
+        Check("ADPCM relecture : 4e lecture = mem[latch+1] ($12)", cd.Read(&HA) = &H12)
+        Check("ADPCM relecture : 5e lecture = mem[latch+2] ($13)", cd.Read(&HA) = &H13)
+        ' Ré-armement : le pipeline repart du nouveau latch (mêmes règles)
+        cd.Write(8, &H4) : cd.Write(9, &H40)     ' latch = $4004
+        cd.Write(&HD, &H8) : cd.Write(&HD, &H0)  ' lecture = $4003
+        cd.Read(&HA)                             ' jetée
+        cd.Read(&HA)                             ' mem[$4003]
+        Check("ADPCM relecture après ré-armement : mem[latch] ($14)", cd.Read(&HA) = &H14)
+
         Console.WriteLine()
         Console.WriteLine(passed & " réussis, " & failed & " échoués")
         Return If(failed = 0, 0, 1)
