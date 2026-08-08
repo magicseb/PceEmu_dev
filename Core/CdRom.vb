@@ -66,6 +66,14 @@ Public Class CdRom
     Private adpcmWriteAddr As Integer
     Private adpcmReadAddr As Integer
     Private adpcmReadBuf As Integer     ' tampon à une lecture de latence du port $180A
+    Private adpcmHalf As Boolean        ' « moitié restante » : longueur < $8000 (recalculé comme Mednafen)
+
+    ''' <summary>Bits ADPCM de $1803, composés EN DIRECT depuis les drapeaux (niveaux, pas des latches) :
+    ''' $04 = moitié atteinte, $08 = fin atteinte. C'est la désactivation des enables ($1802) par le
+    ''' handler BIOS qui fait retomber l'IRQ ; la lecture de $1803 n'acquitte pas ces bits.</summary>
+    Private Function AdpcmIrqBits() As Integer
+        Return If(adpcmHalf, &H4, 0) Or If(adpcmEnded, &H8, 0)
+    End Function
     Private adpcmLength As Integer
     Private adpcmDmaCtrl As Integer
     Private adpcmControl As Integer
@@ -87,6 +95,13 @@ Public Class CdRom
     Private Shared ReadOnly AdpcmIndex() As Integer = {-1, -1, -1, -1, 2, 4, 6, 8}
 
     Public BramEnabled As Boolean = False
+    Private channelSelect As Integer = 0        ' bit $02 de $1803 : canal L/R pour $1805/6, alterne à chaque lecture
+    Private port4 As Integer = 0                ' dernière valeur écrite en $1804 (relecture)
+    Private faderCmd As Integer = 0             ' $180F : bit3=fondu actif, bit2=2,5s (sinon 6s), bit1=cible ADPCM (sinon CD-DA)
+    Private faderVol As Double = 65536.0        ' volume du fondu (65536 = plein), décrémenté par échantillon
+    Private faderStep As Double = 0.0
+    Private cddaLastL As Integer = 0            ' dernier échantillon CD-DA (abs, fondu appliqué) pour $1805/6
+    Private cddaLastR As Integer = 0
 
     Public Sub New(discImage As CdImage)
         disc = discImage
@@ -94,7 +109,7 @@ Public Class CdRom
 
     Public ReadOnly Property IrqLine As Boolean
         Get
-            Return (irqStatus And irqEnable) <> 0
+            Return ((irqStatus Or AdpcmIrqBits()) And irqEnable And &H7C) <> 0
         End Get
     End Property
 
@@ -115,9 +130,21 @@ Public Class CdRom
             Case &H2        ' relecture enable IRQ
                 Return irqEnable
             Case &H3        ' status IRQ : la lecture acquitte (efface les drapeaux de transfert)
-                Dim v = irqStatus
+                ' Effet de bord matériel : lire $1803 VERROUILLE la BRAM (les écritures
+                ' sont ignorées et les lectures rendent $FF jusqu'à réactivation par
+                ' $1807 bit7). Le bit $02 du status est le sélecteur gauche/droite des
+                ' ports $1805/$1806 : il alterne à chaque lecture (Mednafen).
+                BramEnabled = False
+                Dim v = irqStatus Or AdpcmIrqBits() Or channelSelect
                 irqStatus = irqStatus And Not (IRQ_TRANSFER_DONE Or IRQ_TRANSFER_READY)
+                channelSelect = channelSelect Xor &H2
                 Return v
+            Case &H4        ' relecture du registre de reset ($1804)
+                Return port4
+            Case &H5        ' échantillon CD-DA courant, octet bas (canal selon bit $02 de $1803)
+                Return If((channelSelect And &H2) <> 0, cddaLastR, cddaLastL) And &HFF
+            Case &H6        ' échantillon CD-DA courant, octet haut
+                Return (If((channelSelect And &H2) <> 0, cddaLastR, cddaLastL) >> 8) And &HFF
             Case &HA        ' port de données ADPCM (lecture)
                 ' Le matériel a un tampon à UNE lecture de latence : lire $180A renvoie
                 ' la valeur précédemment tamponnée, puis charge adpcmRam(adpcmReadAddr)
@@ -131,6 +158,16 @@ Public Class CdRom
                 Dim v = adpcmReadBuf
                 adpcmReadBuf = CInt(adpcmRam(adpcmReadAddr And &HFFFF))
                 adpcmReadAddr = (adpcmReadAddr + 1) And &HFFFF
+                ' La relecture CPU consomme aussi la longueur (Mednafen) : half recalculé,
+                ' longueur décrémentée, fin atteinte quand elle tombe à zéro.
+                adpcmHalf = adpcmLength < &H8000
+                If (adpcmControl And &H10) = 0 Then
+                    If adpcmLength <> 0 Then
+                        adpcmLength -= 1
+                    Else
+                        adpcmEnded = True : adpcmHalf = False
+                    End If
+                End If
                 Return v
             Case &HB        ' relecture contrôle DMA ADPCM
                 Return adpcmDmaCtrl
@@ -170,8 +207,14 @@ Public Class CdRom
                 If (Not ackNow) AndAlso ackAsserted Then OnAckRelease()
                 ackAsserted = ackNow
             Case &H4        ' reset CD (bit1)
+                port4 = value
                 If (value And &H2) <> 0 Then ResetBus()
             Case &HA        ' port de données ADPCM (écriture)
+                ' Écrire un octet INCRÉMENTE la longueur restante (plafond $FFFF, si bit4
+                ' non tenu) : c'est le mécanisme du streaming — le DMA/CPU recharge le
+                ' compteur pendant que la lecture le vide (Mednafen pcecd.cpp).
+                adpcmHalf = adpcmLength < &H8000
+                If (adpcmControl And &H10) = 0 AndAlso adpcmLength < &HFFFF Then adpcmLength += 1
                 adpcmRam(adpcmWriteAddr And &HFFFF) = CByte(value And &HFF)
                 adpcmWriteAddr = (adpcmWriteAddr + 1) And &HFFFF
             Case &HB        ' contrôle DMA ADPCM : bit0/1 = DMA auto depuis le CD
@@ -186,19 +229,18 @@ Public Class CdRom
             Case &HD        ' contrôle ADPCM ($180D) — sémantique Mednafen pcecd.cpp
                 If (value And &H80) <> 0 Then       ' D7 : reset complet
                     adpcmAddrLatch = 0 : adpcmReadAddr = 0 : adpcmWriteAddr = 0
-                    irqStatus = irqStatus And Not IRQ_ADPCM_END
-                    adpcmLength = 0 : adpcmPlaying = False : adpcmEnded = False
+                    adpcmLength = 0 : adpcmPlaying = False : adpcmEnded = False : adpcmHalf = False
                     adpcmHighNibble = False : adpcmPredictor = 0 : adpcmStepIndex = 0
                     adpcmControl = 0
                 Else
                     ' D5 ($20) : lecture marche/arrêt (sur front)
                     If adpcmPlaying AndAlso (value And &H20) = 0 Then adpcmPlaying = False
                     If (Not adpcmPlaying) AndAlso (value And &H20) <> 0 Then
-                        adpcmPlaying = True : adpcmEnded = False
+                        adpcmPlaying = True : adpcmEnded = False : adpcmHalf = False
                         adpcmHighNibble = False : adpcmPredictor = 0 : adpcmStepIndex = 0 : adpcmFrac = 0.0
                     End If
                     ' D4 ($10) : longueur = latch (compteur décroissant)
-                    If (value And &H10) <> 0 Then adpcmLength = adpcmLatchAddr() : adpcmEnded = False : irqStatus = irqStatus And Not IRQ_ADPCM_END
+                    If (value And &H10) <> 0 Then adpcmLength = adpcmLatchAddr() : adpcmEnded = False
                     ' D3 ($08) front : adresse de LECTURE = latch (ou latch-1 si D2=0)
                     If (adpcmControl And &H8) = 0 AndAlso (value And &H8) <> 0 Then
                         If (value And &H4) <> 0 Then adpcmReadAddr = adpcmLatchAddr() _
@@ -211,10 +253,21 @@ Public Class CdRom
                     End If
                     adpcmControl = value
                 End If
+            Case &HF        ' fondu de sortie ($180F) : bit3=démarrer (sinon annuler),
+                ' bit2=rapide 2,5 s (sinon 6 s), bit1=cible ADPCM (sinon CD-DA). Le
+                ' volume descend de 65536 à 0 sur la durée choisie (Mednafen).
+                faderCmd = value
+                If (value And &H8) = 0 Then
+                    faderVol = 65536.0 : faderStep = 0.0
+                Else
+                    Dim secs = If((value And &H4) <> 0, 2.5, 6.0)
+                    faderStep = 65536.0 / (secs * 44100.0)
+                End If
             Case &HE        ' fréquence de lecture ADPCM
                 adpcmRate = value
-            Case &H7        ' active la BRAM
-                BramEnabled = (value And &H80) <> 0
+            Case &H7        ' active la BRAM (bit7=1 seulement ; bit7=0 ne désactive PAS —
+                ' c'est la LECTURE de $1803 qui verrouille, cf. Read Case &H3)
+                If (value And &H80) <> 0 Then BramEnabled = True
             Case Else
                 ' ADPCM / audio : ignorés pour l'instant
         End Select
@@ -226,6 +279,11 @@ Public Class CdRom
         ph = Phase.BusFree
         sBsy = False : sReq = False : sMsg = False : sCd = False : sIo = False
         cmdIdx = 0 : dataPos = 0 : irqStatus = 0 : ackAsserted = False
+        ' Le RST SCSI ($1804 bit1) fait tout avorter côté lecteur, y compris la
+        ' lecture audio CD-DA en cours. C'est lui qui coupe la musique quand la
+        ' System Card redémarre après un reset console : sans cela, la piste
+        ' continuait de jouer par-dessus l'écran de boot (vu sur Down Load 2).
+        cddaPlaying = False : cddaPaused = False : cddaSectorValid = False
     End Sub
 
     Private Sub StartSelection()
@@ -285,12 +343,19 @@ Public Class CdRom
             Case &H0        ' TEST UNIT READY
                 EnterStatus(0)
             Case &H8        ' READ(6)
+                ' Une lecture de données interrompt la lecture audio en cours : le
+                ' lecteur ne peut pas lire des secteurs et jouer du CD-DA en même
+                ' temps (comportement Mednafen pcecd_drive). Couvre le cas d'un jeu
+                ' qui enchaîne un chargement sans réémettre de RST.
+                cddaPlaying = False : cddaPaused = False : cddaSectorValid = False
                 Dim lba = ((cmd(1) And &H1F) << 16) Or (cmd(2) << 8) Or cmd(3)
                 Dim count = cmd(4)
                 If count = 0 Then count = 256
                 Dim buf(count * 2048 - 1) As Byte
                 For i = 0 To count - 1
-                    System.Array.Copy(disc.ReadUserData(lba + i), 0, buf, i * 2048, 2048)
+                    ' Blindage : un LBA hors disque rend des zéros au lieu de planter
+                    Dim sect = disc.ReadUserData(lba + i)
+                    If sect IsNot Nothing Then System.Array.Copy(sect, 0, buf, i * 2048, Math.Min(2048, sect.Length))
                 Next
                 EnterDataIn(buf)
             Case &HDE       ' GET DIR INFO (TOC)
@@ -376,8 +441,14 @@ Public Class CdRom
     ''' </summary>
     Public Sub RenderAudio(buffer As Short(), numSamples As Integer)
         For i = 0 To numSamples - 1 Step 2
+            ' Le fondu ($180F) avance avec le temps, que le CD-DA joue ou non.
+            If faderStep > 0 AndAlso faderVol > 0 Then
+                faderVol -= faderStep
+                If faderVol < 0 Then faderVol = 0
+            End If
             If Not cddaPlaying OrElse cddaPaused Then
                 buffer(i) = 0 : buffer(i + 1) = 0
+                cddaLastL = 0 : cddaLastR = 0
                 Continue For
             End If
             If Not cddaSectorValid Then
@@ -390,8 +461,17 @@ Public Class CdRom
                 cddaSampleInSector = 0
             End If
             Dim o = cddaSampleInSector * 4
-            buffer(i) = DecodeSample(cddaSector, o)
-            buffer(i + 1) = DecodeSample(cddaSector, o + 2)
+            Dim sl = CInt(DecodeSample(cddaSector, o))
+            Dim sr = CInt(DecodeSample(cddaSector, o + 2))
+            ' Fondu ciblant le CD-DA (bit3 actif, bit1=0)
+            If (faderCmd And &H8) <> 0 AndAlso (faderCmd And &H2) = 0 Then
+                sl = CInt(sl * faderVol / 65536.0)
+                sr = CInt(sr * faderVol / 65536.0)
+            End If
+            buffer(i) = CShort(sl)
+            buffer(i + 1) = CShort(sr)
+            ' Caches pour $1805/$1806 (valeur absolue, fondu appliqué — Mednafen)
+            cddaLastL = Math.Abs(sl) : cddaLastR = Math.Abs(sr)
             cddaSampleInSector += 1
             If cddaSampleInSector >= 588 Then
                 cddaCurLba += 1
@@ -421,6 +501,7 @@ Public Class CdRom
                 If Not adpcmPlaying Then Exit While
             End While
             Dim s16 = adpcmPredictor << 4
+            If (faderCmd And &HA) = &HA Then s16 = CInt(s16 * faderVol / 65536.0)
             If s16 > 32767 Then s16 = 32767
             If s16 < -32768 Then s16 = -32768
             Dim l = CInt(buffer(i)) + s16 : If l > 32767 Then l = 32767 Else If l < -32768 Then l = -32768
@@ -434,16 +515,16 @@ Public Class CdRom
         ' adpcmHighNibble=False : début d'octet → charger l'octet + décoder le demi-octet HAUT
         ' adpcmHighNibble=True  : décoder le demi-octet BAS du même octet
         If Not adpcmHighNibble Then
-            ' fin de sample : longueur épuisée (et D4 non tenu)
+            ' Moitié : longueur restante < $8000 (recalculé à chaque fetch, comme Mednafen).
+            ' Sert au streaming ping-pong : IRQ « moitié » ($04) -> le jeu recharge par DMA
+            ' pendant que la lecture continue (jingle du logo NEC Avenue de Down Load 2).
+            adpcmHalf = adpcmLength < &H8000
+            ' fin de sample : longueur épuisée (et D4 non tenu). L'IRQ « fin » ($08)
+            ' déclenche le ménage du BIOS ($E845 : TRB #$0C $1802 puis TRB #$60 $180D) ;
+            ' sans elle, ad_stat répond « en lecture » à vie (Down Load 2 figé au cerveau).
             If adpcmLength = 0 AndAlso (adpcmControl And &H10) = 0 Then
+                If adpcmEnded Then adpcmHalf = False    ' au fetch suivant la fin, half retombe
                 adpcmEnded = True
-                ' Fin de lecture ADPCM : lever l'IRQ « ADPCM end » ($08 de $1803). Le
-                ' handler IRQ2 de la System Card ($E845) désactive alors les enables
-                ' ($1802 &= ~$0C) et EFFACE les bits play du contrôle (TRB #$60 $180D) ;
-                ' sans cette IRQ, ad_stat lit un contrôle « en lecture » pour toujours et
-                ' les jeux qui attendent la fin d'une narration restent bloqués
-                ' (Down Load 2 : figé sur l'écran du cerveau de l'intro).
-                irqStatus = irqStatus Or IRQ_ADPCM_END
                 If (adpcmControl And &H40) <> 0 Then adpcmPlaying = False   ' D6 : stop en fin
             End If
             adpcmCurByte = CInt(adpcmRam(adpcmReadAddr And &HFFFF))
@@ -481,6 +562,8 @@ Public Class CdRom
     Private Sub AdpcmDmaFromCd()
         If ph = Phase.DataIn Then
             While dataPos < dataBuf.Length
+                adpcmHalf = adpcmLength < &H8000
+                If (adpcmControl And &H10) = 0 AndAlso adpcmLength < &HFFFF Then adpcmLength += 1
                 adpcmRam(adpcmWriteAddr And &HFFFF) = dataBuf(dataPos)
                 adpcmWriteAddr = (adpcmWriteAddr + 1) And &HFFFF
                 dataPos += 1
@@ -600,6 +683,8 @@ Public Class CdRom
         w.Write(adpcmFrac) : w.Write(adpcmCurByte) : w.Write(adpcmAddrLatch)
         w.Write(BramEnabled)
         w.Write(adpcmReadBuf)               ' format 3
+        w.Write(adpcmHalf)                  ' format 4
+        w.Write(channelSelect) : w.Write(port4) : w.Write(faderCmd) : w.Write(faderVol)   ' format 5
     End Sub
 
     Public Sub LoadState(r As System.IO.BinaryReader, version As Integer)
@@ -624,6 +709,14 @@ Public Class CdRom
         adpcmFrac = r.ReadDouble() : adpcmCurByte = r.ReadInt32() : adpcmAddrLatch = r.ReadInt32()
         BramEnabled = r.ReadBoolean()
         adpcmReadBuf = If(version >= 3, r.ReadInt32(), 0)
+        adpcmHalf = If(version >= 4, r.ReadBoolean(), False)
+        If version >= 5 Then
+            channelSelect = r.ReadInt32() : port4 = r.ReadInt32()
+            faderCmd = r.ReadInt32() : faderVol = r.ReadDouble()
+        Else
+            channelSelect = 0 : port4 = 0 : faderCmd = 0 : faderVol = 65536.0
+        End If
+        faderStep = If((faderCmd And &H8) <> 0, 65536.0 / (If((faderCmd And &H4) <> 0, 2.5, 6.0) * 44100.0), 0.0)
     End Sub
 
 End Class

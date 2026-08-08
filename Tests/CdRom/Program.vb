@@ -130,6 +130,98 @@ Public Module CdRomTest
         cd.Write(&HD, &H10)                      ' re-latch de longueur (nouvelle lecture)
         Check("re-latch de longueur : bit $08 effacé", (cd.Read(3) And &H8) = 0)
 
+        ' 9) Le RST SCSI et une lecture de données interrompent la lecture CD-DA.
+        ' RST ($1804 bit1) : le lecteur avorte tout, audio compris — c'est ce qui coupe
+        ' la musique quand la System Card redémarre après un reset console. READ(6) :
+        ' le lecteur ne peut pas lire des données et jouer de l'audio en même temps.
+        ' (Down Load 2 : la piste du titre continuait de jouer par-dessus l'écran de
+        ' boot après un reset, et survivait même au relancement du jeu.)
+        SendCommand(cd, New Integer() {&HD8, 0, 0, 0, 0, 2, 0, 0, 0, &H0})   ' jouer depuis LBA 2
+        AckStatusMessage(cd)
+        SendCommand(cd, New Integer() {&HD9, 1, 0, 0, 0, 10, 0, 0, 0, &H0})  ' fin LBA 10, mode LOOP
+        AckStatusMessage(cd)
+        Check("CD-DA : lecture démarrée (SUBQ=playing)", SubqStatus(cd) = 0)
+        cd.Write(4, &H2)                                                      ' RST SCSI
+        Check("RST SCSI : lecture CD-DA interrompue (SUBQ=stopped)", SubqStatus(cd) = 3)
+        SendCommand(cd, New Integer() {&HD8, 0, 0, 0, 0, 2, 0, 0, 0, &H0})
+        AckStatusMessage(cd)
+        SendCommand(cd, New Integer() {&HD9, 1, 0, 0, 0, 10, 0, 0, 0, &H0})
+        AckStatusMessage(cd)
+        Check("CD-DA : lecture redémarrée", SubqStatus(cd) = 0)
+        DoRead(cd, disc, lba:=5, count:=1)                                    ' READ(6) pendant l'audio
+        Check("READ(6) : lecture CD-DA interrompue (SUBQ=stopped)", SubqStatus(cd) = 3)
+
+        ' 10) Streaming ADPCM (jingle du logo NEC de Down Load 2) — sémantique Mednafen :
+        ' le bit « moitié » ($04 de $1803) = longueur restante < $8000, recalculé en
+        ' continu ; ÉCRIRE en RAM ADPCM ré-incrémente la longueur (plafond $FFFF) —
+        ' c'est le rechargement du streaming ping-pong ; la lecture CPU la décrémente.
+        cd.Write(&HD, &H80)                      ' reset ADPCM
+        cd.Write(8, &H0) : cd.Write(9, &H90)     ' latch = $9000
+        cd.Write(&HD, &H3) : cd.Write(&HD, &H0)  ' adresse d'écriture = $9000 (peu importe le contenu)
+        cd.Write(8, &H0) : cd.Write(9, &H0)      ' latch = $0000 (adresse de lecture)
+        cd.Write(&HD, &H8) : cd.Write(&HD, &H0)  ' adresse de lecture armée
+        cd.Write(8, &H0) : cd.Write(9, &H90)     ' latch = $9000 (longueur)
+        cd.Write(&HE, &HF)                       ' cadence max
+        cd.Write(&HD, &H70) : cd.Write(&HD, &H60)
+        Check("longueur $9000 : bit moitié ($04) ÉTEINT", (cd.Read(3) And &H4) = 0)
+        Dim buf2(4095) As Short
+        For i = 1 To 400
+            cd.RenderAudio(buf2, 4096)
+            If (cd.Read(3) And &H4) <> 0 Then Exit For
+        Next
+        Check("longueur drainée sous $8000 : bit moitié ALLUMÉ", (cd.Read(3) And &H4) <> 0)
+        Check("pas encore la fin", (cd.Read(3) And &H8) = 0)
+        For i = 1 To &H2000 : cd.Write(&HA, &H88) : Next   ' rechargement : 8 Ko écrits
+        Check("écriture de $2000 octets : longueur ré-incrémentée, moitié ÉTEINTE", (cd.Read(3) And &H4) = 0)
+        cd.Write(&HD, &H0)                       ' stop lecture
+        ' Décompte à la lecture CPU : longueur 3, la 6e lecture (2 d'amorce + 3 données + 1) atteint la fin
+        cd.Write(&HD, &H80)
+        cd.Write(8, &H3) : cd.Write(9, &H0)      ' latch = $0003
+        cd.Write(&HD, &H10) : cd.Write(&HD, &H0) ' longueur = 3
+        cd.Write(8, &H0) : cd.Write(9, &H0)
+        cd.Write(&HD, &H8) : cd.Write(&HD, &H0)  ' adresse de lecture armée
+        ' chaque lecture décrémente (y compris les lectures d'amorce du pipeline, Mednafen)
+        For i = 1 To 3 : cd.Read(&HA) : Next
+        Check("relecture CPU : longueur pas encore épuisée (3 lectures)", (cd.Read(3) And &H8) = 0)
+        cd.Read(&HA)
+        Check("relecture CPU : 4e lecture -> longueur épuisée, fin ($08) posée", (cd.Read(3) And &H8) <> 0)
+
+        ' 11) Verrou BRAM et bit L/R de $1803 — sémantique matérielle (Mednafen) :
+        ' lire $1803 VERROUILLE la BRAM ; écrire $1807 bit7=1 la déverrouille ;
+        ' écrire $1807 bit7=0 est SANS effet ; le bit $02 de $1803 alterne à
+        ' chaque lecture (sélecteur gauche/droite des ports $1805/$1806).
+        cd.Write(7, &H80)
+        Check("BRAM : $1807 bit7=1 déverrouille", cd.BramEnabled)
+        cd.Read(3)
+        Check("BRAM : la lecture de $1803 verrouille", Not cd.BramEnabled)
+        cd.Write(7, &H80)
+        cd.Write(7, &H0)
+        Check("BRAM : $1807 bit7=0 est sans effet (reste déverrouillée)", cd.BramEnabled)
+        Dim t1 = cd.Read(3) And &H2
+        Dim t2 = cd.Read(3) And &H2
+        Check("$1803 : le bit $02 (canal L/R) alterne à chaque lecture", t1 <> t2)
+
+        ' 12) Fader $180F : jouer une piste (les secteurs data servent d'échantillons
+        ' non nuls), lancer un fondu CD-DA rapide (2,5 s), pomper ~3 s d'audio :
+        ' $1805/$1806 (échantillon courant, fondu appliqué) doivent tomber à zéro.
+        cd.Write(&HF, &H0)                                                    ' fondu annulé
+        SendCommand(cd, New Integer() {&HD8, 0, 0, 0, 0, 2, 0, 0, 0, &H0})   ' jouer depuis LBA 2
+        AckStatusMessage(cd)
+        SendCommand(cd, New Integer() {&HD9, 1, 0, 0, 0, 8, 0, 0, 0, &H0})   ' fin LBA 8, mode 1 (boucle)
+        AckStatusMessage(cd)
+        Dim bufF(4095) As Short
+        Dim loudBefore = 0
+        For i = 1 To 8
+            cd.RenderAudio(bufF, 4096)
+            loudBefore = Math.Max(loudBefore, Math.Max(cd.Read(5), cd.Read(5)))
+        Next
+        Check("fader annulé : échantillon CD-DA courant non nul ($1805)", loudBefore > 0)
+        cd.Write(&HF, &HC)                                                    ' fondu CD-DA, 2,5 s
+        For i = 1 To 70 : cd.RenderAudio(bufF, 4096) : Next                   ' ~3,2 s de fondu (2048 éch./appel)
+        Dim loudAfter = Math.Max(cd.Read(5), cd.Read(5))
+        Check("fondu CD-DA écoulé : échantillon courant à zéro", loudAfter = 0)
+        cd.Write(&HF, &H0)
+
         Console.WriteLine()
         Console.WriteLine(passed & " réussis, " & failed & " échoués")
         Return If(failed = 0, 0, 1)
@@ -141,6 +233,23 @@ Public Module CdRomTest
         cd.Write(2, &H80)   ' ACK assert
         cd.Write(2, &H0)    ' ACK release
     End Sub
+
+    ''' <summary>Acquitte la phase Status puis Message pour revenir en bus libre.</summary>
+    Private Sub AckStatusMessage(cd As CdRom)
+        cd.Read(1)                              ' status
+        cd.Write(2, &H80) : cd.Write(2, &H0)
+        cd.Read(1)                              ' message
+        cd.Write(2, &H80) : cd.Write(2, &H0)
+    End Sub
+
+    ''' <summary>READ SUB-Q ($DD) : renvoie l'octet de statut (0=lecture, 2=pause, 3=arrêt).</summary>
+    Private Function SubqStatus(cd As CdRom) As Integer
+        SendCommand(cd, New Integer() {&HDD, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+        Dim st = cd.Read(8)                     ' 1er octet = statut
+        For i = 2 To 10 : cd.Read(8) : Next     ' vider les 9 restants
+        AckStatusMessage(cd)
+        Return st
+    End Function
 
     Private Sub SendCommand(cd As CdRom, cdb As Integer())
         cd.Write(0, 0)      ' SEL -> commande

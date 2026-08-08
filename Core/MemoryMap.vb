@@ -135,9 +135,18 @@ Public Class MemoryMap
         ElseIf page >= &HF8 AndAlso page <= &HFB Then
             Return workRam(WorkRamIndex(page, offset))
         ElseIf page = &HF7 Then
+            ' Verrou BRAM (jeux CD) : la lecture de $1803 verrouille, $1807 bit7
+            ' déverrouille ; verrouillée, la BRAM se lit $FF (beetle-pce/Mednafen).
+            ' Les HuCard sans lecteur CD gardent l'accès libre (pas d'interface $1800).
+            If cd IsNot Nothing AndAlso Not cd.BramEnabled Then Return &HFF
             Return bram(offset And &H7FF)
         End If
         Return &HFF
+    End Function
+
+    ''' <summary>Lecture directe de la work RAM (offset dans la page $F8) — pour les bancs.</summary>
+    Public Function PeekWorkRam(offset As Integer) As Integer
+        Return workRam(offset And &H1FFF)
     End Function
 
     ''' <summary>Écrit un octet</summary>
@@ -155,6 +164,8 @@ Public Class MemoryMap
         ElseIf page >= &HF8 AndAlso page <= &HFB Then
             workRam(WorkRamIndex(page, offset)) = CByte(value)
         ElseIf page = &HF7 Then
+            ' Verrouillée (jeux CD), l'écriture BRAM est ignorée.
+            If cd IsNot Nothing AndAlso Not cd.BramEnabled Then Return
             Dim slot = offset And &H7FF
             If bram(slot) <> CByte(value) Then
                 bram(slot) = CByte(value)
@@ -192,6 +203,7 @@ Public Class MemoryMap
                         Dim st = 0
                         If TimerRef IsNot Nothing AndAlso TimerRef.IrqPending Then st = st Or &H4
                         If Irq1Line Then st = st Or &H2
+                        If Irq2Line Then st = st Or &H1
                         Return st
                     Case Else
                         Return 0

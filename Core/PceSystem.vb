@@ -22,7 +22,7 @@ Public Class PceSystem
 
     ' Signature d'une sauvegarde d'état : "PCEST" suivi du numéro de format
     Private Shared ReadOnly STATE_MAGIC As Byte() = {&H50, &H43, &H45, &H53, &H54}
-    Private Const STATE_VERSION As Integer = 3   ' 3 : ajout du tampon de lecture ADPCM ($180A)
+    Private Const STATE_VERSION As Integer = 5   ' 3 : tampon lecture ADPCM ; 4 : moitié ADPCM ; 5 : fader/canal L-R/port4
 
     ''' <summary>
     ''' BRAM d'une console neuve. Les jeux reconnaissent une mémoire formatée à cet
@@ -189,6 +189,11 @@ Public Class PceSystem
 
     Public Function DbgPsgState() As String
         Return psg.DbgState()
+    End Function
+
+    ''' <summary>Lecture de la page zéro logique ($2000+zp) sans effet de bord — pour les bancs.</summary>
+    Public Function PeekZp(zp As Integer) As Integer
+        Return mpu.PeekWorkRam(zp And &HFF)
     End Function
 
     Public Sub Reset()

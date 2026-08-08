@@ -26,9 +26,12 @@ Public Class Cpu6280
     Private mpu As MemoryMap
     Private vdc As Vdc
 
-    ' Flag T : actif pour la prochaine instruction
-    Private tFlagPending As Boolean = False
+    ' Flag T (mode « mémoire » des ALU) — modèle MAME h6280 : T est le bit $20 de P.
+    ' SET le pose ; TOUTE instruction l'efface ensuite (sauf SET/CSL/CSH qui le
+    ' préservent) ; PLP/RTI le restaurent depuis la pile, donc le mode T survit à
+    ' une interruption tombée entre SET et l'instruction ALU (P est poussé avec T).
     Private tFlagActive As Boolean = False
+    Private extraCycles As Integer = 0
 
     Public Sub New(memory As MemoryMap, vdcRef As Vdc)
         mpu = memory
@@ -44,8 +47,8 @@ Public Class Cpu6280
         CyclesThisFrame = 0
         Halted = False
         FastMode = False
-        tFlagPending = False
         tFlagActive = False
+        extraCycles = 0
         ' Le HuC6280 démarre avec MPR7 = 0
         PC = ReadMem(&HFFFE) Or (ReadMem(&HFFFF) << 8)
     End Sub
@@ -62,12 +65,8 @@ Public Class Cpu6280
         If (P And FLAG_I) <> 0 Then Return False
         Dim disable = mpu.IrqDisable
 
-        ' IRQ2 - CD-ROM² (vecteur $FFF6, priorité la plus haute)
-        If mpu.Irq2Line AndAlso (disable And &H1) = 0 Then
-            DoInterrupt(&HFFF6)
-            Return True
-        End If
-
+        ' Ordre de priorité du matériel (MAME h6280) : TIMER > IRQ1 > IRQ2.
+        ' Ne change l'arbitrage que si plusieurs IRQ coïncident sur la même instruction.
         ' TIMER (vecteur $FFFA)
         If mpu.TimerRef IsNot Nothing AndAlso mpu.TimerRef.IrqPending AndAlso (disable And &H4) = 0 Then
             DoInterrupt(&HFFFA)
@@ -78,15 +77,21 @@ Public Class Cpu6280
             DoInterrupt(&HFFF8)
             Return True
         End If
+        ' IRQ2 - CD-ROM² (vecteur $FFF6)
+        If mpu.Irq2Line AndAlso (disable And &H1) = 0 Then
+            DoInterrupt(&HFFF6)
+            Return True
+        End If
         Return False
     End Function
 
     Private Sub DoInterrupt(vector As Integer)
         PushByte((PC >> 8) And &HFF)
         PushByte(PC And &HFF)
-        PushByte(P And Not (FLAG_B Or FLAG_T))
-        P = (P Or FLAG_I) And Not (FLAG_D Or FLAG_T)
-        tFlagPending = False : tFlagActive = False
+        ' B=0 (IRQ matérielle) ; T POUSSÉ tel quel : le mode T survit à l'IRQ via
+        ' la pile (RTI le restaure), comme MAME (compose_p(0, _fB) puis push P).
+        PushByte(P And Not FLAG_B)
+        P = (P Or FLAG_I) And Not FLAG_D
         PC = ReadMem(vector) Or (ReadMem(vector + 1) << 8)
     End Sub
 
@@ -99,12 +104,22 @@ Public Class Cpu6280
             Return 8
         End If
 
-        ' Gestion flag T (SET affecte l'instruction suivante)
-        tFlagActive = tFlagPending
-        tFlagPending = False
+        ' Flag T : lu depuis P (posé par SET, restauré par PLP/RTI), consommé par
+        ' cette instruction puis effacé — sauf par SET ($F4), CSL/CSH ($54/$D4)
+        ' qui le préservent, et PLP/RTI ($28/$40) dont le P fraîchement dépilé
+        ' fait foi (MAME h6280 : plp/rti n'appellent pas clear_t — c'est ainsi
+        ' que le mode T survit à une IRQ tombée entre SET et l'instruction ALU).
+        tFlagActive = (P And FLAG_T) <> 0
 
         Dim opcode = Fetch()
-        Dim cycles = ExecuteOpcode(opcode)
+        Dim cycles = ExecuteOpcode(opcode) + extraCycles
+        extraCycles = 0
+        Select Case opcode
+            Case &HF4, &H54, &HD4, &H28, &H40
+                ' T préservé (SET/CSL/CSH) ou restauré depuis la pile (PLP/RTI)
+            Case Else
+                P = P And Not FLAG_T
+        End Select
         CyclesThisFrame += cycles
         Return cycles
     End Function
@@ -208,6 +223,7 @@ Public Class Cpu6280
     ' ===== Opérations ALU (avec support flag T) =====
     Private Sub DoADC(operand As Integer)
         If tFlagActive Then
+            extraCycles += 3
             Dim zaddr = ZpAddr(X)
             Dim m = ReadMem(zaddr)
             Dim r = AdcCalc(m, operand)
@@ -226,7 +242,8 @@ Public Class Cpu6280
             Dim lo = (acc And &HF) + (operand And &HF) + carry
             Dim hi = (acc >> 4) + (operand >> 4)
             If lo > 9 Then lo += 6 : hi += 1
-            SetFlag(FLAG_V, False)
+            ' V n'est PAS modifié en mode décimal (comme SBC décimal ; MAME h6280)
+            extraCycles += 1
             If hi > 9 Then hi += 6
             SetFlag(FLAG_C, hi > 15)
             Return ((hi And &HF) << 4) Or (lo And &HF)
@@ -239,27 +256,44 @@ Public Class Cpu6280
     End Function
 
     Private Sub DoSBC(operand As Integer)
-        Dim carry = If((P And FLAG_C) <> 0, 0, 1)
-        If (P And FLAG_D) <> 0 Then
-            Dim lo = (A And &HF) - (operand And &HF) - carry
-            Dim hi = (A >> 4) - (operand >> 4)
-            If lo < 0 Then lo -= 6 : hi -= 1
-            If hi < 0 Then hi -= 6
-            Dim result = A - operand - carry
-            SetFlag(FLAG_C, result >= 0)
-            A = ((hi And &HF) << 4) Or (lo And &HF)
-            UpdateZN(A)
+        ' SBC a aussi une variante en mode T (MAME tsbc) : opérande mémoire à
+        ' ($2000+X), résultat réécrit en mémoire, A intact, flags depuis la mémoire.
+        If tFlagActive Then
+            Dim zaddr = ZpAddr(X)
+            Dim m = ReadMem(zaddr)
+            Dim r = SbcCalc(m, operand)
+            WriteMem(zaddr, r)
+            UpdateZN(r)
+            extraCycles += 3
         Else
-            Dim diff = A - operand - carry
-            SetFlag(FLAG_C, diff >= 0)
-            SetFlag(FLAG_V, ((A Xor operand) And (A Xor diff) And &H80) <> 0)
-            A = diff And &HFF
+            A = SbcCalc(A, operand)
             UpdateZN(A)
         End If
     End Sub
 
+    Private Function SbcCalc(acc As Integer, operand As Integer) As Integer
+        Dim carry = If((P And FLAG_C) <> 0, 0, 1)
+        If (P And FLAG_D) <> 0 Then
+            Dim lo = (acc And &HF) - (operand And &HF) - carry
+            Dim hi = (acc >> 4) - (operand >> 4)
+            If lo < 0 Then lo -= 6 : hi -= 1
+            If hi < 0 Then hi -= 6
+            Dim result = acc - operand - carry
+            SetFlag(FLAG_C, result >= 0)
+            ' V n'est pas modifié en mode décimal (MAME)
+            extraCycles += 1
+            Return ((hi And &HF) << 4) Or (lo And &HF)
+        Else
+            Dim diff = acc - operand - carry
+            SetFlag(FLAG_C, diff >= 0)
+            SetFlag(FLAG_V, ((acc Xor operand) And (acc Xor diff) And &H80) <> 0)
+            Return diff And &HFF
+        End If
+    End Function
+
     Private Sub DoAND(operand As Integer)
         If tFlagActive Then
+            extraCycles += 3
             Dim zaddr = ZpAddr(X)
             Dim r = ReadMem(zaddr) And operand
             WriteMem(zaddr, r)
@@ -272,6 +306,7 @@ Public Class Cpu6280
 
     Private Sub DoORA(operand As Integer)
         If tFlagActive Then
+            extraCycles += 3
             Dim zaddr = ZpAddr(X)
             Dim r = ReadMem(zaddr) Or operand
             WriteMem(zaddr, r)
@@ -284,6 +319,7 @@ Public Class Cpu6280
 
     Private Sub DoEOR(operand As Integer)
         If tFlagActive Then
+            extraCycles += 3
             Dim zaddr = ZpAddr(X)
             Dim r = ReadMem(zaddr) Xor operand
             WriteMem(zaddr, r)
@@ -349,11 +385,12 @@ Public Class Cpu6280
         Select Case op
             ' --- BRK / interruptions logicielles ---
             Case &H0  ' BRK (vecteur IRQ2 $FFF6)
+                P = P And Not FLAG_T            ' T effacé AVANT le push (MAME)
                 PC = (PC + 1) And &HFFFF
                 PushByte((PC >> 8) And &HFF)
                 PushByte(PC And &HFF)
                 PushByte(P Or FLAG_B)
-                P = (P Or FLAG_I) And Not (FLAG_D Or FLAG_T)
+                P = (P Or FLAG_I) And Not FLAG_D
                 PC = ReadMem(&HFFF6) Or (ReadMem(&HFFF7) << 8)
                 Return 8
 
@@ -564,7 +601,7 @@ Public Class Cpu6280
             Case &H7C : Dim jb = (FetchWord() + X) And &HFFFF : PC = ReadMem(jb) Or (ReadMem((jb + 1) And &HFFFF) << 8) : Return 7
             Case &H20 : Dim ta = FetchWord() : Dim ret = (PC - 1) And &HFFFF : PushByte(ret >> 8) : PushByte(ret And &HFF) : PC = ta : Return 7
             Case &H60 : Dim lo6 = PopByte() : Dim hi6 = PopByte() : PC = ((lo6 Or (hi6 << 8)) + 1) And &HFFFF : Return 7
-            Case &H40 : P = PopByte() : Dim lo4 = PopByte() : Dim hi4 = PopByte() : PC = lo4 Or (hi4 << 8) : Return 7
+            Case &H40 : P = PopByte() Or FLAG_B : Dim lo4 = PopByte() : Dim hi4 = PopByte() : PC = lo4 Or (hi4 << 8) : Return 7   ' RTI : effet immédiat, pas de délai (6502)
             Case &H44 : Dim rel8 = Fetch() : If rel8 >= &H80 Then rel8 -= 256
                 Dim retB = (PC - 1) And &HFFFF
                 PushByte(retB >> 8) : PushByte(retB And &HFF)
@@ -574,8 +611,15 @@ Public Class Cpu6280
             ' --- Pile / transferts ---
             Case &H48 : PushByte(A) : Return 3
             Case &H68 : A = PopByte() : UpdateZN(A) : Return 4
-            Case &H8 : PushByte(P Or FLAG_B) : Return 3
-            Case &H28 : P = PopByte() : Return 4
+            Case &H8 : PushByte((P And Not FLAG_T) Or FLAG_B) : Return 3   ' PHP : T effacé avant le push (MAME)
+            Case &H28
+                ' PLP : B reste à 1 dans P vivant (MAME) ; comme CLI, un démasquage
+                ' de I par PLP n'est reconnu qu'à l'instruction suivante (délai 6502),
+                ' ce qui laisse l'instruction d'acquittement s'exécuter.
+                Dim oldI28 = P And FLAG_I
+                P = PopByte() Or FLAG_B
+                If oldI28 <> 0 AndAlso (P And FLAG_I) = 0 Then mpu.IrqEnableDelay = True
+                Return 4
             Case &HDA : PushByte(X) : Return 3
             Case &HFA : X = PopByte() : UpdateZN(X) : Return 4
             Case &H5A : PushByte(Y) : Return 3
@@ -605,7 +649,7 @@ Public Class Cpu6280
             Case &HC2 : Y = 0 : Return 2                                     ' CLY
             Case &H54 : FastMode = False : Return 3                          ' CSL
             Case &HD4 : FastMode = True : Return 3                           ' CSH
-            Case &HF4 : tFlagPending = True : P = P Or FLAG_T : Return 2     ' SET
+            Case &HF4 : P = P Or FLAG_T : Return 2                           ' SET
             Case &H3 : mpu.WriteStoreImmediate(0, Fetch()) : Return 5        ' ST0
             Case &H13 : mpu.WriteStoreImmediate(2, Fetch()) : Return 5       ' ST1
             Case &H23 : mpu.WriteStoreImmediate(3, Fetch()) : Return 5       ' ST2
@@ -618,14 +662,12 @@ Public Class Cpu6280
                 Return 5
 
             Case &H43  ' TMA #mask
+                ' MAME : chaque bit du masque copie son MPR dans A (le DERNIER bit
+                ' gagne, pas le premier), et TMA ne modifie AUCUN drapeau.
                 Dim maskTma = Fetch()
                 For i = 0 To 7
-                    If (maskTma And (1 << i)) <> 0 Then
-                        A = mpu.GetMPR(i)
-                        Exit For
-                    End If
+                    If (maskTma And (1 << i)) <> 0 Then A = mpu.GetMPR(i)
                 Next
-                UpdateZN(A)
                 Return 4
 
             ' --- Transferts de blocs ---
@@ -683,7 +725,8 @@ Public Class Cpu6280
         w.Write(A) : w.Write(X) : w.Write(Y) : w.Write(S) : w.Write(PC) : w.Write(P)
         w.Write(CyclesThisFrame)
         w.Write(Halted) : w.Write(FastMode)
-        w.Write(tFlagPending) : w.Write(tFlagActive)
+        ' Compat format : 2 booléens historiques (pending/active). T vit dans P.
+        w.Write(False) : w.Write((P And FLAG_T) <> 0)
     End Sub
 
     ''' <summary>Restaure l'état du CPU depuis une sauvegarde.</summary>
@@ -692,7 +735,11 @@ Public Class Cpu6280
         S = r.ReadInt32() : PC = r.ReadInt32() : P = r.ReadInt32()
         CyclesThisFrame = r.ReadInt64()
         Halted = r.ReadBoolean() : FastMode = r.ReadBoolean()
-        tFlagPending = r.ReadBoolean() : tFlagActive = r.ReadBoolean()
+        Dim oldPending = r.ReadBoolean() : Dim oldActive = r.ReadBoolean()
+        ' Vieux états : un SET en attente était hors de P -> le réinjecter dans P.
+        If oldPending Then P = P Or FLAG_T
+        tFlagActive = oldActive
+        extraCycles = 0
     End Sub
 
 End Class
