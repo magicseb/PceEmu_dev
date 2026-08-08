@@ -46,6 +46,9 @@ Public Class CdRom
     Public Const IRQ_TRANSFER_DONE As Integer = &H20
     Public Const IRQ_TRANSFER_READY As Integer = &H40
     Public Const IRQ_CDDA_DONE As Integer = &H10        ' fin de lecture CD-DA (sous-canal)
+    Public Const IRQ_ADPCM_END As Integer = &H8         ' fin de lecture ADPCM (bit $08 de $1803)
+    ' NB : le bit « moitié ADPCM » ($04) n'est volontairement pas émis : sa condition
+    ' matérielle exacte reste à valider sur référence avant de l'implémenter.
 
     ' ---- CD-DA (lecture des pistes audio) ----
     Private cddaPlaying As Boolean
@@ -183,6 +186,7 @@ Public Class CdRom
             Case &HD        ' contrôle ADPCM ($180D) — sémantique Mednafen pcecd.cpp
                 If (value And &H80) <> 0 Then       ' D7 : reset complet
                     adpcmAddrLatch = 0 : adpcmReadAddr = 0 : adpcmWriteAddr = 0
+                    irqStatus = irqStatus And Not IRQ_ADPCM_END
                     adpcmLength = 0 : adpcmPlaying = False : adpcmEnded = False
                     adpcmHighNibble = False : adpcmPredictor = 0 : adpcmStepIndex = 0
                     adpcmControl = 0
@@ -194,7 +198,7 @@ Public Class CdRom
                         adpcmHighNibble = False : adpcmPredictor = 0 : adpcmStepIndex = 0 : adpcmFrac = 0.0
                     End If
                     ' D4 ($10) : longueur = latch (compteur décroissant)
-                    If (value And &H10) <> 0 Then adpcmLength = adpcmLatchAddr() : adpcmEnded = False
+                    If (value And &H10) <> 0 Then adpcmLength = adpcmLatchAddr() : adpcmEnded = False : irqStatus = irqStatus And Not IRQ_ADPCM_END
                     ' D3 ($08) front : adresse de LECTURE = latch (ou latch-1 si D2=0)
                     If (adpcmControl And &H8) = 0 AndAlso (value And &H8) <> 0 Then
                         If (value And &H4) <> 0 Then adpcmReadAddr = adpcmLatchAddr() _
@@ -433,6 +437,13 @@ Public Class CdRom
             ' fin de sample : longueur épuisée (et D4 non tenu)
             If adpcmLength = 0 AndAlso (adpcmControl And &H10) = 0 Then
                 adpcmEnded = True
+                ' Fin de lecture ADPCM : lever l'IRQ « ADPCM end » ($08 de $1803). Le
+                ' handler IRQ2 de la System Card ($E845) désactive alors les enables
+                ' ($1802 &= ~$0C) et EFFACE les bits play du contrôle (TRB #$60 $180D) ;
+                ' sans cette IRQ, ad_stat lit un contrôle « en lecture » pour toujours et
+                ' les jeux qui attendent la fin d'une narration restent bloqués
+                ' (Down Load 2 : figé sur l'écran du cerveau de l'intro).
+                irqStatus = irqStatus Or IRQ_ADPCM_END
                 If (adpcmControl And &H40) <> 0 Then adpcmPlaying = False   ' D6 : stop en fin
             End If
             adpcmCurByte = CInt(adpcmRam(adpcmReadAddr And &HFFFF))

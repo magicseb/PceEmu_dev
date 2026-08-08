@@ -96,6 +96,40 @@ Public Module CdRomTest
         cd.Read(&HA)                             ' mem[$4003]
         Check("ADPCM relecture après ré-armement : mem[latch] ($14)", cd.Read(&HA) = &H14)
 
+        ' 8) IRQ de fin de lecture ADPCM ($08 de $1803) — Down Load 2.
+        ' Quand la lecture ADPCM épuise sa longueur, le bit $08 doit apparaître dans le
+        ' status d'IRQ ($1803) et l'IRQ2 s'asserter si l'enable $08 ($1802) est actif :
+        ' c'est ce qui déclenche le handler de la System Card ($E845) qui efface les bits
+        ' play de $180D (TRB #$60). Sans cette IRQ, ad_stat renvoie « en lecture » pour
+        ' toujours et Down Load 2 reste figé sur l'écran du cerveau de son intro.
+        ' Préparer un petit sample : 32 octets à partir de $2000.
+        cd.Write(8, &H0) : cd.Write(9, &H20)     ' latch = $2000
+        cd.Write(&HD, &H3) : cd.Write(&HD, &H0)  ' adresse d'écriture = $2000
+        For i = 0 To 31 : cd.Write(&HA, &H88) : Next
+        ' Adresse de lecture + longueur = 32, puis lecture (bit5) avec arrêt en fin (bit6).
+        cd.Write(&HD, &H8) : cd.Write(&HD, &H0)  ' adresse de lecture = $1FFF (latch-1)
+        cd.Write(8, &H20) : cd.Write(9, &H0)     ' latch = $0020 (longueur)
+        cd.Write(&HE, &HE)                       ' cadence rapide
+        cd.Write(2, &H8)                         ' enable IRQ2 : fin ADPCM ($08)
+        cd.Write(&HD, &H70)                      ' bit4 longueur=latch + bit5 lecture + bit6 stop-en-fin
+        cd.Write(&HD, &H60)                      ' bit4 relâché (impulsion, comme AD_PLAY du BIOS)
+        Check("ADPCM lecture lancée : pas encore d'IRQ fin", (cd.Read(3) And &H8) = 0)
+        Check("ADPCM lecture lancée : IRQ2 non assertée", Not cd.IrqLine)
+        Dim buf(2047) As Short
+        For i = 1 To 200
+            Array.Clear(buf, 0, buf.Length)
+            cd.RenderAudio(buf, 1024)
+            If (cd.Read(3) And &H8) <> 0 Then Exit For
+        Next
+        Check("fin de lecture : bit $08 posé dans $1803", (cd.Read(3) And &H8) <> 0)
+        Check("fin de lecture : IRQ2 assertée (enable $08)", cd.IrqLine)
+        Dim s3 = cd.Read(3)
+        Check("le bit $08 n'est PAS acquitté par la lecture de $1803", (cd.Read(3) And &H8) <> 0)
+        cd.Write(2, &H0)                         ' le handler BIOS désactive l'enable
+        Check("enable retiré : IRQ2 retombe (pas de tempête)", Not cd.IrqLine)
+        cd.Write(&HD, &H10)                      ' re-latch de longueur (nouvelle lecture)
+        Check("re-latch de longueur : bit $08 effacé", (cd.Read(3) And &H8) = 0)
+
         Console.WriteLine()
         Console.WriteLine(passed & " réussis, " & failed & " échoués")
         Return If(failed = 0, 0, 1)
